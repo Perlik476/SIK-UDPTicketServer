@@ -196,12 +196,14 @@ void send_events(EventArray *array, int socket_fd, struct sockaddr_in client_add
     size_t index = 1;
     EventToSend event_to_send;
     for (size_t i = 0; i < array->count; i++) {
+        Event event = array->array[i];
         event_to_send.event_id = htonl(i);
-        event_to_send.ticket_count = htons(array->array[i].tickets);
-        event_to_send.description_length = array->array[i].description_length;
+        event_to_send.ticket_count = htons(event.tickets);
+        event_to_send.description_length = event.description_length;
         memcpy(message + index, &event_to_send, 7);
         index += 7;
-        memcpy(message + index, array->array[i].description, array->array[i].description_length);
+        memcpy(message + index, event.description, event.description_length);
+        index += event.description_length;
     }
     printf("%s\n", message);
     send_message(socket_fd, &client_address, message, message_size);
