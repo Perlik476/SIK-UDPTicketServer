@@ -209,24 +209,6 @@ void send_events(EventArray *array, int socket_fd, struct sockaddr_in client_add
     send_message(socket_fd, &client_address, message, message_size);
 }
 
-//void send_events(EventArray *array, int socket_fd, struct sockaddr_in client_address) {
-//    // TODO nie może być za duże
-//    size_t message_size = 8;
-//    char *message = safe_malloc(1 + 7 * array->count + array->description_length_sum);
-//    message[0] = EVENTS;
-//    size_t index = 1;
-//    EventToSend event_to_send;
-//    event_to_send.event_id = htonl(15);
-//    event_to_send.ticket_count = htons(10);
-//    event_to_send.description_length = 1;
-//    memcpy(message + index, &event_to_send, 7);
-//    index += 7;
-//    message[index] = 'a';
-////    memcpy(message + index, array->array[i].description, array->array[i].description_length);
-////    printf("%s\n", message);
-//    send_message(socket_fd, &client_address, message, message_size);
-//}
-
 int main(int argc, char *argv[]) {
     Parameters parameters = parse_args(argc, argv);
 
