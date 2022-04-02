@@ -14,6 +14,6 @@ set(CMAKE_CXX_FLAGS "-Wall -Wextra -Wno-implicit-fallthrough")
 set(CMAKE_CXX_FLAGS_DEBUG "-g")
 set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 
-set(SOURCE_FILES ticket_server.cpp)
+set(SOURCE_FILES ticket_server.c)
 
 add_executable(UDPTicketServer ${SOURCE_FILES})
