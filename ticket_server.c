@@ -14,6 +14,45 @@ typedef struct Parameters {
     int time_limit;
 } Parameters;
 
+typedef struct Event {
+    char *description;
+    u_int8_t tickets;
+} Event;
+
+typedef struct EventArray {
+    Event *array;
+    size_t reserved;
+    size_t count;
+} EventArray;
+
+EventArray new_event_array() {
+    size_t reserved = 1;
+    size_t count = 0;
+    Event *array = malloc(reserved * sizeof(Event));
+    return (EventArray) { .count = count, .reserved = reserved, .array = array };
+}
+
+void add_to_event_array(EventArray *array, Event item) {
+    array->count++;
+    if (array->count == array->reserved) {
+        array->reserved *= 2;
+        array->array = realloc(array->array, array->reserved * sizeof(Event));
+    }
+    array->array[array->count - 1] = item;
+}
+
+void print_event_array(EventArray *array) {
+    for (size_t i = 0; i < array->count; i++) {
+        printf("%zu: desc: '%s', tickets: %hhu\n", i, array->array[i].description, array->array[i].tickets);
+    }
+}
+
+void destroy_event_array(EventArray *array) {
+    for (size_t i = 0; i < array->count; i++) {
+        free(array->array[i].description);
+    }
+}
+
 Parameters parse_args(int argc, char *argv[]) {
     if (argc > 7 || argc < 3 || !(argc & 1)) {
         fatal("improper usage.");
@@ -81,22 +120,22 @@ int main(int argc, char *argv[]) {
     int description_length;
     int tickets;
 
-//    description_length = getline(&buff, &buff_len, parameters.file_ptr);
-////    fprintf(stderr, "length: %d\n", description_length);
-//    description = malloc(sizeof(char));
-//    free(description);
-//    printf("%d\n", (description_length = getline(&description, &length, parameters.file_ptr)));
+    EventArray event_array = new_event_array();
+
     while ((description_length = getline(&buff, &buff_len, parameters.file_ptr)) >= 0) {
-        fprintf(stderr, "length: %d\n", description_length);
         description = malloc((size_t) description_length * sizeof(char));
         strcpy(description, buff);
         description[description_length - 1] = '\0';
+
         getline(&buff, &buff_len, parameters.file_ptr);
         tickets = (int) strtol(buff, NULL, 10);
-        printf("%s: %d\n", description, tickets);
-        free(description);
+
+        add_to_event_array(&event_array, (Event) { .description = description, .tickets = tickets });
     }
-//    printf("%s\n", parameters.file_ptr);
+
+    print_event_array(&event_array);
+
+    destroy_event_array(&event_array);
 
     return 0;
 }
