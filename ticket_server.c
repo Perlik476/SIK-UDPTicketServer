@@ -133,6 +133,7 @@ typedef struct ReservationsContainer {
     DynamicArray array;
     size_t outdated_count;
     size_t first_not_outdated;
+    uint32_t next_id;
 } ReservationsContainer;
 
 typedef struct __attribute__((__packed__)) Reservation {
@@ -298,19 +299,10 @@ char *get_new_cookie(uint32_t reservation_id) {
     return cookie;
 }
 
-uint32_t get_next_reservation_id(ReservationsContainer *reservations) {
-    if (reservations->array.count == 0) {
-        return 1000000;
-    }
-    else {
-        return ((Reservation *) reservations->array.array[reservations->array.count - 1])->reservation_id + 1;
-    }
-}
-
 Reservation *add_new_reservation(Server *server, uint32_t event_id, uint16_t ticket_count) {
     ReservationsContainer *reservations = &server->reservations;
     Reservation *reservation = safe_malloc(sizeof(Reservation));
-    uint32_t id = get_next_reservation_id(reservations);
+    uint32_t id = reservations->next_id++;
     char *cookie = get_new_cookie(id);
 
     *reservation = (Reservation) { .event_id = event_id, .ticket_count = ticket_count, .reservation_id = id,
@@ -532,9 +524,9 @@ int main(int argc, char *argv[]) {
     char shared_buffer[BUFFER_SIZE];
 
     Server server = (Server) { .parameters = parameters, .event_array = event_array, .socket_fd = socket_fd,
-                               .reservations = (ReservationsContainer) { .array = new_dynamic_array(),
-                                                                         .first_not_outdated = 0,
-                                                                         .outdated_count = 0 } };
+                               .reservations = (ReservationsContainer)
+                                       { .array = new_dynamic_array(), .first_not_outdated = 0,
+                                         .outdated_count = 0, .next_id = 1000000 } };
 
     srand(2137); // TODO
 
