@@ -22,6 +22,7 @@
 #define BAD_REQUEST 255
 
 #define COOKIE_SIZE 48
+#define NO_TICKETS (-1)
 
 uint64_t static inline htonll(uint64_t x) {
     return ((((uint64_t)htonl(x)) << 32) + htonl((x) >> 32));
@@ -138,6 +139,7 @@ typedef struct __attribute__((__packed__)) Reservation {
     uint16_t ticket_count;
     char cookie[COOKIE_SIZE];
     uint64_t expiration_time;
+    int64_t first_ticket_id;
 } Reservation;
 
 typedef struct Server {
@@ -145,6 +147,7 @@ typedef struct Server {
     int socket_fd;
     EventArray event_array;
     ReservationsContainer reservations;
+    int64_t next_ticket_id;
 } Server;
 
 int bind_socket(uint16_t port) {
@@ -302,7 +305,6 @@ uint32_t get_next_reservation_id(ReservationsContainer *reservations) {
     }
 }
 
-
 Reservation *add_new_reservation(Server *server, uint32_t event_id, uint16_t ticket_count) {
     ReservationsContainer *reservations = &server->reservations;
     Reservation *reservation = safe_malloc(sizeof(Reservation));
@@ -310,7 +312,8 @@ Reservation *add_new_reservation(Server *server, uint32_t event_id, uint16_t tic
     char *cookie = get_new_cookie(id);
 
     *reservation = (Reservation) { .event_id = event_id, .ticket_count = ticket_count, .reservation_id = id,
-                                   .expiration_time = time(NULL) + server->parameters.time_limit };
+                                   .expiration_time = time(NULL) + server->parameters.time_limit,
+                                   .first_ticket_id = NO_TICKETS };
     memcpy(reservation->cookie, cookie, COOKIE_SIZE);
     free(cookie);
 
@@ -319,6 +322,14 @@ Reservation *add_new_reservation(Server *server, uint32_t event_id, uint16_t tic
     add_to_dynamic_array(&reservations->array, reservation);
     return reservation;
 }
+
+typedef struct __attribute__((__packed__)) ReservationToSend {
+    uint32_t reservation_id;
+    uint32_t event_id;
+    uint16_t ticket_count;
+    char cookie[COOKIE_SIZE];
+    uint64_t expiration_time;
+} ReservationToSend;
 
 void process_reservation(const char *buffer, Server *server, struct sockaddr_in client_address) {
     uint32_t event_id;
@@ -341,32 +352,48 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
     }
 
     Reservation *reservation = add_new_reservation(server, event_id, ticket_count);
-    Reservation reservation_net;
-    memcpy(&reservation_net, reservation, sizeof(Reservation));
+
+    ReservationToSend reservation_net;
+    memcpy(&reservation_net, reservation, sizeof(ReservationToSend));
+    printf("tickets: %d\n", reservation_net.ticket_count);
     reservation_net.reservation_id = htonl(reservation_net.reservation_id);
     reservation_net.event_id = htonl(reservation_net.event_id);
     reservation_net.ticket_count = htons(reservation_net.ticket_count);
     reservation_net.expiration_time = htonll(reservation_net.expiration_time);
 
-    size_t message_length = 1 + sizeof(Reservation);
-    printf("%lu\n", sizeof(Reservation));
+    size_t message_length = 1 + sizeof(ReservationToSend);
+    printf("%lu\n", sizeof(ReservationToSend));
 
     char message[message_length];
     message[0] = RESERVATION;
-    memcpy(message + 1, &reservation_net, sizeof(Reservation));
+    memcpy(message + 1, &reservation_net, sizeof(ReservationToSend));
 
     send_message(server->socket_fd, &client_address, message, message_length);
 }
 
-uint16_t find_reservation(ReservationsContainer *reservations, uint32_t reservation_id, char *cookie) {
+Reservation *find_reservation(ReservationsContainer *reservations, uint32_t reservation_id, char *cookie) {
     DynamicArray *array = &reservations->array;
      for (size_t i = 0; i < array->count; i++) {
+         printf("i: %zu, count: %zu\n", i, array->count);
          Reservation *reservation = (Reservation *) array->array[i];
+         printf("res_id: %d vs %d\n", reservation->reservation_id, reservation_id);
+         printf("cookie: %.*s vs %.*s\n", COOKIE_SIZE, reservation->cookie, COOKIE_SIZE, cookie);
          if (reservation->reservation_id == reservation_id && memcmp(reservation->cookie, cookie, COOKIE_SIZE) == 0) {
-             return reservation->ticket_count;
+             printf("ok\n");
+             return reservation;
          }
      }
-     return 0;
+     return NULL;
+}
+
+void ticket_id_to_str(char *str, int64_t id) {
+    printf("id: %ld\n", id);
+    for (size_t i = 0; i < 7; i++) {
+        char temp = (char) (id % 36);
+        printf("  temp: %d\n", temp);
+        str[i] = temp < 10 ? (48 + temp) : (55 + temp);
+        id /= 36;
+    }
 }
 
 void process_tickets(const char *buffer, Server *server, struct sockaddr_in client_address) {
@@ -380,20 +407,28 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
 
     printf("reservation_id: %d\n", reservation_id);
 
-    uint16_t ticket_count = find_reservation(&server->reservations, reservation_id, cookie);
+    Reservation *reservation = find_reservation(&server->reservations, reservation_id, cookie);
+    if (reservation == NULL) {
+        send_bad_request(reservation_id, server->socket_fd, client_address);
+        return;
+    }
+    uint16_t ticket_count = reservation->ticket_count;
 
     printf("ticket_count: %d\n", ticket_count);
 
-    if (ticket_count == 0) {
-        send_bad_request(reservation_id, server->socket_fd, client_address);
-        return;
+    if (reservation->first_ticket_id == NO_TICKETS) {
+        reservation->first_ticket_id = server->next_ticket_id;
+        server->next_ticket_id += ticket_count;
     }
 
     size_t message_length = 7 + 7 * ticket_count;
     char message[message_length];
     message[0] = TICKETS;
 
-    memset(message + 7, '0', 7 * ticket_count);
+//    memset(message + 7, '0', 7 * ticket_count);
+    for (size_t i = 0; i < ticket_count; i++) {
+        ticket_id_to_str(message + 7 * (i + 1), reservation->first_ticket_id + (int64_t) i);
+    }
 
     reservation_id = htonl(reservation_id);
     ticket_count = htons(ticket_count);
@@ -456,8 +491,6 @@ int main(int argc, char *argv[]) {
         read_length = read_message(socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
         char* client_ip = inet_ntoa(client_address.sin_addr);
         uint16_t client_port = ntohs(client_address.sin_port);
-//        printf("received %zd bytes from client %s:%u: '%.*s'\n", read_length, client_ip, client_port, (int) read_length,
-//               shared_buffer);
         printf("received %zd bytes from client %s:%u: '%d'\n", read_length, client_ip, client_port, shared_buffer[0]);
         if (shared_buffer[0] == GET_EVENTS && read_length == 1) {
             send_events(&server, client_address);
