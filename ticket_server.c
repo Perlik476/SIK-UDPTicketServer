@@ -10,15 +10,18 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <time.h>
 #include "err.h"
 
 #define GET_EVENTS 1
 #define EVENTS 2
-#define GET_RESERVATIONS 3
-#define RESERVATIONS 4
+#define GET_RESERVATION 3
+#define RESERVATION 4
 #define GET_TICKETS 5
 #define TICKETS 6
 #define BAD_REQUEST 255
+
+#define COOKIE_SIZE 48
 
 void error(char *message) {
     fprintf(stderr, "%s\n", message);
@@ -71,7 +74,7 @@ void add_to_event_array(EventArray *array, Event item) {
 
 void print_event_array(EventArray *array) {
     for (size_t i = 0; i < array->count; i++) {
-        printf("%zu: desc: '%s', tickets: %hhu\n", i, array->array[i].description, array->array[i].tickets);
+        printf("%zu: desc: '%s', tickets: %hu\n", i, array->array[i].description, array->array[i].tickets);
     }
 }
 
@@ -80,6 +83,61 @@ void destroy_event_array(EventArray *array) {
         free(array->array[i].description);
     }
 }
+
+typedef struct DynamicArray {
+    void **array;
+    size_t reserved;
+    size_t count;
+} DynamicArray;
+
+
+DynamicArray new_dynamic_array() {
+    size_t reserved = 1;
+    size_t count = 0;
+    void **array = safe_malloc(reserved * sizeof(void *));
+    return (DynamicArray) { .count = count, .reserved = reserved, .array = array };
+}
+
+void add_to_dynamic_array(DynamicArray *array, void *item) {
+    array->count++;
+    if (array->count == array->reserved) {
+        array->reserved *= 2;
+        array->array = realloc(array->array, array->reserved * sizeof(Event));
+    }
+    array->array[array->count - 1] = item;
+}
+
+void print_event_array_dyn(DynamicArray *array) {
+    Event **events = (Event **) array->array;
+    for (size_t i = 0; i < array->count; i++) {
+        printf("%zu: desc: '%s', tickets: %hu\n", i, events[i]->description, events[i]->tickets);
+    }
+}
+
+void destroy_dynamic_array(DynamicArray *array) {
+    for (size_t i = 0; i < array->count; i++) {
+        free(array->array[i]);
+    }
+}
+
+typedef struct ReservationsContainer {
+    DynamicArray array;
+} ReservationsContainer;
+
+typedef struct __attribute__((__packed__)) Reservation {
+    uint32_t reservation_id;
+    uint32_t event_id;
+    uint16_t ticket_count;
+    char cookie[COOKIE_SIZE];
+    uint64_t expiration_time;
+} Reservation;
+
+typedef struct Server {
+    Parameters parameters;
+    int socket_fd;
+    EventArray event_array;
+    ReservationsContainer reservations;
+} Server;
 
 int bind_socket(uint16_t port) {
     int socket_fd = socket(AF_INET, SOCK_DGRAM, 0); // creating IPv4 UDP socket
@@ -187,15 +245,15 @@ struct __attribute__((__packed__)) EventToSend {
 
 typedef struct EventToSend EventToSend;
 
-void send_events(EventArray *array, int socket_fd, struct sockaddr_in client_address) {
+void send_events(Server *server, struct sockaddr_in client_address) {
     // TODO nie może być za duże
-    size_t message_size = 1 + 7 * array->count + array->description_length_sum;
-    char *message = safe_malloc(1 + 7 * array->count + array->description_length_sum);
+    size_t message_size = 1 + 7 * server->event_array.count + server->event_array.description_length_sum;
+    char message[message_size];
     message[0] = EVENTS;
     size_t index = 1;
     EventToSend event_to_send;
-    for (size_t i = 0; i < array->count; i++) {
-        Event event = array->array[i];
+    for (size_t i = 0; i < server->event_array.count; i++) {
+        Event event = server->event_array.array[i];
         event_to_send.event_id = htonl(i);
         event_to_send.ticket_count = htons(event.tickets);
         event_to_send.description_length = event.description_length;
@@ -205,8 +263,7 @@ void send_events(EventArray *array, int socket_fd, struct sockaddr_in client_add
         index += event.description_length;
     }
     printf("%s\n", message);
-    send_message(socket_fd, &client_address, message, message_size);
-    free(message);
+    send_message(server->socket_fd, &client_address, message, message_size);
 }
 
 void send_bad_request(uint32_t id, int socket_fd, struct sockaddr_in client_address) {
@@ -217,7 +274,45 @@ void send_bad_request(uint32_t id, int socket_fd, struct sockaddr_in client_addr
     send_message(socket_fd, &client_address, message, 5);
 }
 
-void process_reservation(char *buffer, EventArray *array, int socket_fd, struct sockaddr_in client_address) {
+char *get_new_cookie(uint32_t reservation_id) {
+    char *cookie = safe_malloc(COOKIE_SIZE * sizeof(char));
+    printf("reservation_id: %d\n", reservation_id);
+    sprintf(cookie, "%d", reservation_id);
+    size_t len = strlen(cookie);
+    for (size_t i = len - 1; i < COOKIE_SIZE; i++) {
+        cookie[i] = 33 + (rand() % 94);
+    }
+    return cookie;
+}
+
+uint32_t get_next_reservation_id(ReservationsContainer *reservations) {
+    if (reservations->array.count == 0) {
+        return 1000000;
+    }
+    else {
+        return ((Reservation *) reservations->array.array[reservations->array.count - 1])->reservation_id + 1;
+    }
+}
+
+
+Reservation *add_new_reservation(Server *server, uint32_t event_id, uint16_t ticket_count) {
+    ReservationsContainer *reservations = &server->reservations;
+    Reservation *reservation = safe_malloc(sizeof(Reservation));
+    uint32_t id = get_next_reservation_id(reservations);
+    char *cookie = get_new_cookie(id);
+
+    *reservation = (Reservation) { .event_id = event_id, .ticket_count = ticket_count, .reservation_id = id,
+                                   .expiration_time = time(NULL) + server->parameters.time_limit };
+    memcpy(reservation->cookie, cookie, COOKIE_SIZE);
+    free(cookie);
+
+    server->event_array.array[event_id].tickets -= ticket_count;
+
+    add_to_dynamic_array(&reservations->array, reservation);
+    return reservation;
+}
+
+void process_reservation(const char *buffer, Server *server, struct sockaddr_in client_address) {
     uint32_t event_id;
     uint16_t ticket_count;
 
@@ -227,13 +322,31 @@ void process_reservation(char *buffer, EventArray *array, int socket_fd, struct 
     memcpy(&ticket_count, buffer + 4, 2);
     ticket_count = ntohs(ticket_count);
 
-    if (event_id >= array->count || ticket_count == 0) {
-        send_bad_request(event_id, socket_fd, client_address);
+    if (event_id >= server->event_array.count || ticket_count == 0) {
+        send_bad_request(event_id, server->socket_fd, client_address);
+        return;
     }
 
-    if (array->array[event_id].tickets < ticket_count) {
-        send_bad_request(event_id, socket_fd, client_address);
+    if (server->event_array.array[event_id].tickets < ticket_count) {
+        send_bad_request(event_id, server->socket_fd, client_address);
+        return;
     }
+
+    Reservation *reservation = add_new_reservation(server, event_id, ticket_count);
+    Reservation reservation_net;
+    memcpy(&reservation_net, reservation, sizeof(Reservation));
+    reservation_net.reservation_id = htonl(reservation_net.reservation_id);
+    reservation_net.event_id = htonl(reservation_net.event_id);
+    reservation_net.ticket_count = htons(reservation_net.ticket_count);
+    reservation_net.expiration_time = reservation_net.expiration_time; // TODO ???
+
+    size_t message_length = 1 + sizeof(Reservation);
+    printf("%lu\n", sizeof(Reservation));
+    char message[message_length];
+    message[0] = RESERVATION;
+    memcpy(message + 1, &reservation_net, sizeof(Reservation));
+//    printf("%s\n", message);
+    send_message(server->socket_fd, &client_address, message, message_length);
 }
 
 int main(int argc, char *argv[]) {
@@ -246,6 +359,7 @@ int main(int argc, char *argv[]) {
     uint16_t tickets;
 
     EventArray event_array = new_event_array();
+    DynamicArray dynamic_event_array = new_dynamic_array();
 
     while ((description_length = getline(&buff, &buff_len, parameters.file_ptr)) >= 0) {
         description = safe_malloc((size_t) (description_length - 1) * sizeof(char));
@@ -257,12 +371,21 @@ int main(int argc, char *argv[]) {
 
         add_to_event_array(&event_array, (Event) { .description = description, .tickets = tickets,
                                                    .description_length = (uint8_t) description_length - 1});
+        Event *event = malloc(sizeof(Event));
+        *event = (Event) { .description = description, .description_length = description_length, .tickets = tickets };
+        add_to_dynamic_array(&dynamic_event_array, event);
     }
 
     print_event_array(&event_array);
+    print_event_array_dyn(&dynamic_event_array);
 
     int socket_fd = bind_socket(parameters.port);
     char shared_buffer[BUFFER_SIZE];
+
+    Server server = (Server) { .parameters = parameters, .event_array = event_array, .socket_fd = socket_fd,
+                               .reservations = (ReservationsContainer) { .array = new_dynamic_array() } };
+
+    srand(2137); // TODO
 
     struct sockaddr_in client_address;
     size_t read_length;
@@ -274,14 +397,15 @@ int main(int argc, char *argv[]) {
 //               shared_buffer);
         printf("received %zd bytes from client %s:%u: '%d'\n", read_length, client_ip, client_port, shared_buffer[0]);
         if (shared_buffer[0] == GET_EVENTS) {
-            send_events(&event_array, socket_fd, client_address);
+            send_events(&server, client_address);
         }
-        else if (shared_buffer[0] == GET_RESERVATIONS) {
-            process_reservation(shared_buffer + 1, &event_array, socket_fd, client_address);
+        else if (shared_buffer[0] == GET_RESERVATION) {
+            process_reservation(shared_buffer + 1, &server, client_address);
         }
     } while (read_length > 0);
 
     destroy_event_array(&event_array);
+    destroy_dynamic_array(&dynamic_event_array);
 
     return 0;
 }
