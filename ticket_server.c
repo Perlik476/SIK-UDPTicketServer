@@ -23,7 +23,6 @@
 
 #define COOKIE_SIZE 48
 
-
 uint64_t static inline htonll(uint64_t x) {
     return ((((uint64_t)htonl(x)) << 32) + htonl((x) >> 32));
 }
@@ -351,11 +350,66 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
 
     size_t message_length = 1 + sizeof(Reservation);
     printf("%lu\n", sizeof(Reservation));
+
     char message[message_length];
     message[0] = RESERVATION;
     memcpy(message + 1, &reservation_net, sizeof(Reservation));
-//    printf("%s\n", message);
+
     send_message(server->socket_fd, &client_address, message, message_length);
+}
+
+uint16_t find_reservation(ReservationsContainer *reservations, uint32_t reservation_id, char *cookie) {
+    DynamicArray *array = &reservations->array;
+     for (size_t i = 0; i < array->count; i++) {
+         Reservation *reservation = (Reservation *) array->array[i];
+         if (reservation->reservation_id == reservation_id && memcmp(reservation->cookie, cookie, COOKIE_SIZE) == 0) {
+             return reservation->ticket_count;
+         }
+     }
+     return 0;
+}
+
+void process_tickets(const char *buffer, Server *server, struct sockaddr_in client_address) {
+    uint32_t reservation_id;
+    char cookie[COOKIE_SIZE];
+
+    memcpy(&reservation_id, buffer, 4);
+    reservation_id = ntohl(reservation_id);
+
+    memcpy(&cookie, buffer + 4, COOKIE_SIZE);
+
+    printf("reservation_id: %d\n", reservation_id);
+
+    uint16_t ticket_count = find_reservation(&server->reservations, reservation_id, cookie);
+
+    printf("ticket_count: %d\n", ticket_count);
+
+    if (ticket_count == 0) {
+        send_bad_request(reservation_id, server->socket_fd, client_address);
+        return;
+    }
+
+    size_t message_length = 7 + 7 * ticket_count;
+    char message[message_length];
+    message[0] = TICKETS;
+
+    memset(message + 7, '0', 7 * ticket_count);
+
+    reservation_id = htonl(reservation_id);
+    ticket_count = htons(ticket_count);
+
+    memcpy(message + 1, &reservation_id, 4);
+    memcpy(message + 5, &ticket_count, 2);
+
+    printf("message_length: %zu\n", message_length);
+    for (size_t i = 0; i < message_length; i++) {
+        printf("%d, ", message[i]);
+    }
+    printf("\n");
+
+    send_message(server->socket_fd, &client_address, message, message_length);
+
+    send_events(server, client_address);
 }
 
 int main(int argc, char *argv[]) {
@@ -405,13 +459,16 @@ int main(int argc, char *argv[]) {
 //        printf("received %zd bytes from client %s:%u: '%.*s'\n", read_length, client_ip, client_port, (int) read_length,
 //               shared_buffer);
         printf("received %zd bytes from client %s:%u: '%d'\n", read_length, client_ip, client_port, shared_buffer[0]);
-        if (shared_buffer[0] == GET_EVENTS) {
+        if (shared_buffer[0] == GET_EVENTS && read_length == 1) {
             send_events(&server, client_address);
         }
-        else if (shared_buffer[0] == GET_RESERVATION) {
+        else if (shared_buffer[0] == GET_RESERVATION && read_length == 7) {
             process_reservation(shared_buffer + 1, &server, client_address);
         }
-    } while (read_length > 0);
+        else if (shared_buffer[0] == GET_TICKETS && read_length == 53) {
+            process_tickets(shared_buffer + 1, &server, client_address);
+        }
+    } while (read_length > 0); // TODO
 
     destroy_event_array(&event_array);
     destroy_dynamic_array(&dynamic_event_array);
