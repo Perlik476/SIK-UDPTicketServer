@@ -23,6 +23,15 @@
 
 #define COOKIE_SIZE 48
 
+
+uint64_t static inline htonll(uint64_t x) {
+    return ((((uint64_t)htonl(x)) << 32) + htonl((x) >> 32));
+}
+
+uint64_t static inline ntohll(uint64_t x) {
+    return htonll(x);
+}
+
 void error(char *message) {
     fprintf(stderr, "%s\n", message);
     exit(1);
@@ -338,7 +347,7 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
     reservation_net.reservation_id = htonl(reservation_net.reservation_id);
     reservation_net.event_id = htonl(reservation_net.event_id);
     reservation_net.ticket_count = htons(reservation_net.ticket_count);
-    reservation_net.expiration_time = reservation_net.expiration_time; // TODO ???
+    reservation_net.expiration_time = htonll(reservation_net.expiration_time);
 
     size_t message_length = 1 + sizeof(Reservation);
     printf("%lu\n", sizeof(Reservation));
