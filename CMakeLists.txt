@@ -1,4 +1,4 @@
-project(UDPTicketServer)
+project(ticket_server)
 
 if (NOT CMAKE_BUILD_TYPE)
     message(STATUS "No build type selected, default to Release")
@@ -16,4 +16,4 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 
 set(SOURCE_FILES ticket_server.c)
 
-add_executable(UDPTicketServer ${SOURCE_FILES})
+add_executable(ticket_server ${SOURCE_FILES})
