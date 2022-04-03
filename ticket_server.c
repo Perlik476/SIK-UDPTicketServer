@@ -473,24 +473,43 @@ void check_outdated_reservations(Server *server) {
 
 Reservation *find_reservation(ReservationsContainer *reservations, uint32_t reservation_id, char *cookie) {
     DynamicArray *array = &reservations->array;
-     for (size_t i = 0; i < array->count; i++) {
-         printf("i: %zu, count: %zu\n", i, array->count);
-         Reservation *reservation = (Reservation *) array->array[i];
-         printf("res_id: %d vs %d\n", reservation->reservation_id, reservation_id);
-         printf("cookie: %.*s vs %.*s\n", COOKIE_SIZE, reservation->cookie, COOKIE_SIZE, cookie);
-         if (reservation->reservation_id == reservation_id && memcmp(reservation->cookie, cookie, COOKIE_SIZE) == 0) {
-             printf("ok\n");
-             return reservation;
-         }
-     }
-     return NULL;
+    if (array->count == 0) {
+        return NULL;
+    }
+    int begin = 0;
+    int end = (int) array->count - 1;
+    int mid = (begin + end) / 2;
+    Reservation *reservation;
+    do {
+        reservation = array->array[mid];
+        printf("1. begin: %d, end: %d, mid: %d, cur: %d, wanted: %d\n", begin, end, mid,
+               reservation->reservation_id, reservation_id);
+        if (reservation->reservation_id == reservation_id) {
+            break;
+        }
+        if (reservation->reservation_id < reservation_id) {
+            begin = mid + 1;
+        }
+        else if (reservation->reservation_id > reservation_id) {
+            end = mid - 1;
+        }
+        mid = (begin + end) / 2;
+        printf("2. begin: %d, end: %d, mid: %d, cur: %d, wanted: %d\n", begin, end, mid,
+               reservation->reservation_id, reservation_id);
+    } while (end > 0 && begin < array->count - 1);
+
+    reservation = array->array[mid];
+    if (reservation->reservation_id == reservation_id && memcmp(reservation->cookie, cookie, COOKIE_SIZE) == 0) {
+        return reservation;
+    }
+    return NULL;
 }
 
 void ticket_id_to_str(char *str, int64_t id) {
-    printf("id: %ld\n", id);
+//    printf("id: %ld\n", id);
     for (size_t i = 0; i < 7; i++) {
         char temp = (char) (id % 36);
-        printf("  temp: %d\n", temp);
+//        printf("  temp: %d\n", temp);
         str[i] = temp < 10 ? (48 + temp) : (55 + temp);
         id /= 36;
     }
@@ -505,7 +524,7 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
 
     memcpy(&cookie, buffer + 4, COOKIE_SIZE);
 
-    printf("reservation_id: %d\n", reservation_id);
+//    printf("reservation_id: %d\n", reservation_id);
 
     Reservation *reservation = find_reservation(&server->reservations, reservation_id, cookie);
     if (reservation == NULL || (reservation->first_ticket_id == NO_TICKETS && reservation->expiration_time < time(NULL))) {
@@ -514,7 +533,7 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     }
     uint16_t ticket_count = reservation->ticket_count;
 
-    printf("ticket_count: %d\n", ticket_count);
+//    printf("ticket_count: %d\n", ticket_count);
 
     if (reservation->first_ticket_id == NO_TICKETS) {
         reservation->first_ticket_id = server->next_ticket_id;
@@ -536,11 +555,11 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     memcpy(message + 1, &reservation_id, 4);
     memcpy(message + 5, &ticket_count, 2);
 
-    printf("message_length: %zu\n", message_length);
-    for (size_t i = 0; i < message_length; i++) {
-        printf("%d, ", message[i]);
-    }
-    printf("\n");
+//    printf("message_length: %zu\n", message_length);
+//    for (size_t i = 0; i < message_length; i++) {
+//        printf("%d, ", message[i]);
+//    }
+//    printf("\n");
 
     send_message(server->socket_fd, &client_address, message, message_length);
 }
