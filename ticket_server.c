@@ -373,14 +373,35 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
     send_message(server->socket_fd, &client_address, message, message_length);
 }
 
-void remove_outdated_reservations(ReservationsContainer *reservations) {
-
+void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t current_time) {
+    DynamicArray *array = &reservations->array;
+    size_t current_index = 0;
+    for (size_t i = 0; i < array->count; i++) {
+        Reservation *reservation = (Reservation *)array->array[i];
+        if (reservation->first_ticket_id != NO_TICKETS || reservation->expiration_time > current_time) {
+            array->array[current_index++] = reservation;
+        }
+    }
+    reservations->array.count = current_index;
+    reservations->outdated_count = 0;
+    reservations->first_not_outdated = 0;
+    while (reservations->array.reserved / 2 > current_index) {
+        reservations->array.reserved /= 2;
+    }
+    if (current_index == 0) {
+        reservations->array.array = safe_malloc(sizeof(void *));
+    }
+    else {
+        reservations->array.array = realloc(array->array, reservations->array.reserved * sizeof(void *));
+        // TODO safe_realloc
+    }
 }
 
 
-void check_outdated_reservations(ReservationsContainer *reservations) {
+void check_outdated_reservations(Server *server) {
     uint64_t current_time = time(NULL);
 
+    ReservationsContainer *reservations = &server->reservations;
     DynamicArray *array = &reservations->array;
     for (size_t i = reservations->first_not_outdated; i < array->count; i++) {
         Reservation *reservation = ((Reservation *)array->array[i]);
@@ -388,11 +409,14 @@ void check_outdated_reservations(ReservationsContainer *reservations) {
             break;
         }
         reservations->first_not_outdated++;
-        reservations->outdated_count += reservation->first_ticket_id != NO_TICKETS;
+        if (reservation->first_ticket_id == NO_TICKETS) {
+            reservations->outdated_count++;
+            server->event_array.array[reservation->event_id].tickets += reservation->ticket_count;
+        }
     }
 
-    if (reservations->outdated_count >= array->count / 4) {
-        remove_outdated_reservations(reservations);
+    if (reservations->outdated_count >= array->count / 2) {
+        remove_outdated_reservations(reservations, current_time);
     }
 }
 
@@ -499,6 +523,8 @@ int main(int argc, char *argv[]) {
         add_to_dynamic_array(&dynamic_event_array, event);
     }
 
+    fclose(parameters.file_ptr);
+
     print_event_array(&event_array);
     print_event_array_dyn(&dynamic_event_array);
 
@@ -520,6 +546,7 @@ int main(int argc, char *argv[]) {
         uint16_t client_port = ntohs(client_address.sin_port);
         printf("received %zd bytes from client %s:%u: '%d', time: %ld\n", read_length, client_ip, client_port,
                shared_buffer[0], time(NULL));
+        check_outdated_reservations(&server);
         if (shared_buffer[0] == GET_EVENTS && read_length == 1) {
             send_events(&server, client_address);
         }
