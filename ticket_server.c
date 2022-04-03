@@ -131,6 +131,8 @@ void destroy_dynamic_array(DynamicArray *array) {
 
 typedef struct ReservationsContainer {
     DynamicArray array;
+    size_t outdated_count;
+    size_t first_not_outdated;
 } ReservationsContainer;
 
 typedef struct __attribute__((__packed__)) Reservation {
@@ -371,6 +373,29 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
     send_message(server->socket_fd, &client_address, message, message_length);
 }
 
+void remove_outdated_reservations(ReservationsContainer *reservations) {
+
+}
+
+
+void check_outdated_reservations(ReservationsContainer *reservations) {
+    uint64_t current_time = time(NULL);
+
+    DynamicArray *array = &reservations->array;
+    for (size_t i = reservations->first_not_outdated; i < array->count; i++) {
+        Reservation *reservation = ((Reservation *)array->array[i]);
+        if (reservation->expiration_time > current_time) {
+            break;
+        }
+        reservations->first_not_outdated++;
+        reservations->outdated_count += reservation->first_ticket_id != NO_TICKETS;
+    }
+
+    if (reservations->outdated_count >= array->count / 4) {
+        remove_outdated_reservations(reservations);
+    }
+}
+
 Reservation *find_reservation(ReservationsContainer *reservations, uint32_t reservation_id, char *cookie) {
     DynamicArray *array = &reservations->array;
      for (size_t i = 0; i < array->count; i++) {
@@ -408,7 +433,7 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     printf("reservation_id: %d\n", reservation_id);
 
     Reservation *reservation = find_reservation(&server->reservations, reservation_id, cookie);
-    if (reservation == NULL) {
+    if (reservation == NULL || (reservation->first_ticket_id == NO_TICKETS && reservation->expiration_time < time(NULL))) {
         send_bad_request(reservation_id, server->socket_fd, client_address);
         return;
     }
@@ -481,7 +506,9 @@ int main(int argc, char *argv[]) {
     char shared_buffer[BUFFER_SIZE];
 
     Server server = (Server) { .parameters = parameters, .event_array = event_array, .socket_fd = socket_fd,
-                               .reservations = (ReservationsContainer) { .array = new_dynamic_array() } };
+                               .reservations = (ReservationsContainer) { .array = new_dynamic_array(),
+                                                                         .first_not_outdated = 0,
+                                                                         .outdated_count = 0 } };
 
     srand(2137); // TODO
 
@@ -491,7 +518,8 @@ int main(int argc, char *argv[]) {
         read_length = read_message(socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
         char* client_ip = inet_ntoa(client_address.sin_addr);
         uint16_t client_port = ntohs(client_address.sin_port);
-        printf("received %zd bytes from client %s:%u: '%d'\n", read_length, client_ip, client_port, shared_buffer[0]);
+        printf("received %zd bytes from client %s:%u: '%d', time: %ld\n", read_length, client_ip, client_port,
+               shared_buffer[0], time(NULL));
         if (shared_buffer[0] == GET_EVENTS && read_length == 1) {
             send_events(&server, client_address);
         }
