@@ -177,8 +177,7 @@ Parameters parse_args(int argc, char *argv[]) {
     return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
 }
 
-#define BUFFER_SIZE 10
-char shared_buffer[BUFFER_SIZE];
+#define BUFFER_SIZE 1000
 
 struct __attribute__((__packed__)) EventToSend {
     uint32_t event_id;
@@ -207,6 +206,34 @@ void send_events(EventArray *array, int socket_fd, struct sockaddr_in client_add
     }
     printf("%s\n", message);
     send_message(socket_fd, &client_address, message, message_size);
+    free(message);
+}
+
+void send_bad_request(uint32_t id, int socket_fd, struct sockaddr_in client_address) {
+    char message[5];
+    message[0] = BAD_REQUEST;
+    id = htonl(id);
+    memcpy(message + 1, &id, 4);
+    send_message(socket_fd, &client_address, message, 5);
+}
+
+void process_reservation(char *buffer, EventArray *array, int socket_fd, struct sockaddr_in client_address) {
+    uint32_t event_id;
+    uint16_t ticket_count;
+
+    memcpy(&event_id, buffer, 4);
+    event_id = ntohl(event_id);
+
+    memcpy(&ticket_count, buffer + 4, 2);
+    ticket_count = ntohs(ticket_count);
+
+    if (event_id >= array->count || ticket_count == 0) {
+        send_bad_request(event_id, socket_fd, client_address);
+    }
+
+    if (array->array[event_id].tickets < ticket_count) {
+        send_bad_request(event_id, socket_fd, client_address);
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -235,6 +262,7 @@ int main(int argc, char *argv[]) {
     print_event_array(&event_array);
 
     int socket_fd = bind_socket(parameters.port);
+    char shared_buffer[BUFFER_SIZE];
 
     struct sockaddr_in client_address;
     size_t read_length;
@@ -247,6 +275,9 @@ int main(int argc, char *argv[]) {
         printf("received %zd bytes from client %s:%u: '%d'\n", read_length, client_ip, client_port, shared_buffer[0]);
         if (shared_buffer[0] == GET_EVENTS) {
             send_events(&event_array, socket_fd, client_address);
+        }
+        else if (shared_buffer[0] == GET_RESERVATIONS) {
+            process_reservation(shared_buffer + 1, &event_array, socket_fd, client_address);
         }
     } while (read_length > 0);
 
