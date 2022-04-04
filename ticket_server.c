@@ -24,6 +24,7 @@
 
 #define COOKIE_SIZE 48
 #define NO_TICKETS (-1)
+#define MAX_MESSAGE_LENGTH 65507
 
 // Evaluate `x`: if non-zero, describe it as a standard error code and exit with an error.
 #define CHECK(x)                                                          \
@@ -308,7 +309,7 @@ Parameters parse_args(int argc, char *argv[]) {
     return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
 }
 
-#define BUFFER_SIZE 1000
+#define BUFFER_SIZE 66000
 
 struct __attribute__((__packed__)) EventToSend {
     uint32_t event_id;
@@ -320,12 +321,20 @@ typedef struct EventToSend EventToSend;
 
 void send_events(Server *server, struct sockaddr_in client_address) {
     // TODO nie może być za duże
-    size_t message_size = 1 + 7 * server->event_array.count + server->event_array.description_length_sum;
+    size_t message_size = 1;
+    size_t number_of_events_to_send = 0;
+    for (size_t i = 0; i < server->event_array.count; i++) {
+        if (message_size + 7 + server->event_array.array[i].description_length > MAX_MESSAGE_LENGTH) {
+            break;
+        }
+        message_size += 7 + server->event_array.array[i].description_length;
+        number_of_events_to_send++;
+    }
     char message[message_size];
     message[0] = EVENTS;
     size_t index = 1;
     EventToSend event_to_send;
-    for (size_t i = 0; i < server->event_array.count; i++) {
+    for (size_t i = 0; i < number_of_events_to_send; i++) {
         Event event = server->event_array.array[i];
         event_to_send.event_id = htonl(i);
         event_to_send.ticket_count = htons(event.tickets);
@@ -394,6 +403,11 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
     memcpy(&ticket_count, buffer + 4, 2);
     ticket_count = ntohs(ticket_count);
 
+    if ((ticket_count + 1) * 7 > MAX_MESSAGE_LENGTH) {
+        send_bad_request(event_id, server->socket_fd, client_address);
+        return;
+    }
+
     if (event_id >= server->event_array.count || ticket_count == 0) {
         send_bad_request(event_id, server->socket_fd, client_address);
         return;
@@ -430,7 +444,11 @@ void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t 
     for (size_t i = 0; i < array->count; i++) {
         Reservation *reservation = (Reservation *)array->array[i];
         if (reservation->first_ticket_id != NO_TICKETS || reservation->expiration_time > current_time) {
-            array->array[current_index++] = reservation;
+            if (current_index != i) {
+                free(array->array[current_index]);
+                array->array[current_index] = reservation;
+            }
+            current_index++;
         }
     }
     reservations->array.count = current_index;
