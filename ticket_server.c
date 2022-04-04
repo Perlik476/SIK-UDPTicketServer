@@ -423,21 +423,31 @@ void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t 
             if (current_index != i) {
                 free(array->array[current_index]);
                 array->array[current_index] = reservation;
+                array->array[i] = NULL;
             }
             current_index++;
         }
     }
+
+    for (size_t i = current_index; i < array->count; i++) {
+        if (array->array[i] != NULL) {
+            free(array->array[i]);
+        }
+    }
+
     reservations->array.count = current_index;
     reservations->outdated_count = 0;
     reservations->first_not_outdated = 0;
     while (reservations->array.reserved / 2 > current_index) {
         reservations->array.reserved /= 2;
     }
-    if (current_index == 0) {
+
+    if (current_index == 0 && reservations->array.reserved != 1) {
+        free(reservations->array.array);
         reservations->array.array = safe_malloc(sizeof(void *));
     }
     else {
-        reservations->array.array = safe_realloc(array->array, reservations->array.reserved * sizeof(void *));
+        reservations->array.array = safe_realloc(reservations->array.array, reservations->array.reserved * sizeof(void *));
     }
 }
 
@@ -570,8 +580,7 @@ int main(int argc, char *argv[]) {
 
     while ((description_length = getline(&buff, &buff_len, parameters.file_ptr)) >= 0) {
         description = safe_malloc((size_t) (description_length - 1) * sizeof(char));
-        strcpy(description, buff);
-        description[description_length - 1] = '\0';
+        memcpy(description, buff, description_length - 1);
 
         getline(&buff, &buff_len, parameters.file_ptr);
         tickets = (uint16_t) strtol(buff, NULL, 10);
@@ -583,7 +592,7 @@ int main(int argc, char *argv[]) {
 
     fclose(parameters.file_ptr);
 
-    print_event_array_dyn(&event_array);
+//    print_event_array_dyn(&event_array);
 
     int socket_fd = bind_socket(parameters.port);
     char shared_buffer[BUFFER_SIZE];
@@ -614,8 +623,15 @@ int main(int argc, char *argv[]) {
         }
     } while (read_length > 0);
 
+    for (size_t i = 0; i < event_array.count; i++) {
+        Event *event = event_array.array[i];
+        free(event->description);
+    }
     destroy_dynamic_array(&event_array);
     destroy_dynamic_array(&server.reservations.array);
+    free(event_array.array);
+    free(server.reservations.array.array);
+    free(buff);
 
     return 0;
 }
