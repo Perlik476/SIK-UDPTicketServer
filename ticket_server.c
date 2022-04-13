@@ -1,19 +1,16 @@
+#define  _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <arpa/inet.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <stdio.h>
-#include <string.h>
-#include <unistd.h>
 #include <stdint.h>
 #include <time.h>
-#include <stdarg.h>
 #include <errno.h>
-#include <unistd.h>
+#include <getopt.h>
 
 #define GET_EVENTS 1
 #define EVENTS 2
@@ -60,11 +57,11 @@
 // Note: the while loop above wraps the statements so that the macro can be used with a semicolon
 // for example: if (a) CHECK(x); else CHECK(y);
 
-uint64_t static inline htonll(uint64_t x) {
+static inline uint64_t htonll(uint64_t x) {
     return ((((uint64_t)htonl(x)) << 32) + htonl((x) >> 32));
 }
 
-uint64_t static inline ntohll(uint64_t x) {
+static inline uint64_t ntohll(uint64_t x) {
     return htonll(x);
 }
 
@@ -250,7 +247,7 @@ Parameters parse_args(int argc, char *argv[]) {
     return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
 }
 
-size_t static inline event_message_size(Event *event) {
+static inline size_t event_message_size(Event *event) {
     return 7 + event->description_length;
 }
 
@@ -258,7 +255,8 @@ DynamicArray read_file(Parameters *parameters) {
     char *buff = NULL;
     size_t buff_len;
     char *description;
-    int description_length;
+    long long description_length;
+    long long digits_count;
 
     uint16_t tickets;
     size_t events_message_size = 1;
@@ -269,7 +267,11 @@ DynamicArray read_file(Parameters *parameters) {
         description = safe_malloc((size_t) (description_length - 1) * sizeof(char));
         memcpy(description, buff, description_length - 1);
 
-        getline(&buff, &buff_len, parameters->file_ptr);
+        digits_count = getline(&buff, &buff_len, parameters->file_ptr);
+        if (digits_count <= 0) {
+            exit(0);
+        }
+
         tickets = (uint16_t) strtol(buff, NULL, 10);
 
         Event *event = safe_malloc(sizeof(Event));
@@ -488,14 +490,14 @@ Reservation *find_reservation(ReservationsContainer *reservations, uint32_t rese
     if (array->count == 0) {
         return NULL;
     }
-    int begin = 0;
-    int end = (int) array->count - 1;
-    int mid = (begin + end) / 2;
+    long long begin = 0;
+    long long end = (int) array->count - 1;
+    long long mid = (begin + end) / 2;
     Reservation *reservation;
     do {
         reservation = array->array[mid];
-        printf("1. begin: %d, end: %d, mid: %d, cur: %d, wanted: %d\n", begin, end, mid,
-               reservation->reservation_id, reservation_id);
+//        printf("1. begin: %d, end: %d, mid: %d, cur: %d, wanted: %d\n", begin, end, mid,
+//               reservation->reservation_id, reservation_id);
         if (reservation->reservation_id == reservation_id) {
             break;
         }
@@ -506,9 +508,9 @@ Reservation *find_reservation(ReservationsContainer *reservations, uint32_t rese
             end = mid - 1;
         }
         mid = (begin + end) / 2;
-        printf("2. begin: %d, end: %d, mid: %d, cur: %d, wanted: %d\n", begin, end, mid,
-               reservation->reservation_id, reservation_id);
-    } while (end > 0 && begin < array->count - 1);
+//        printf("2. begin: %d, end: %d, mid: %d, cur: %d, wanted: %d\n", begin, end, mid,
+//               reservation->reservation_id, reservation_id);
+    } while (end > 0 && begin < (long long) (array->count - 1));
 
     reservation = array->array[mid];
     if (reservation->reservation_id == reservation_id && memcmp(reservation->cookie, cookie, COOKIE_SIZE) == 0) {
@@ -535,7 +537,8 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     memcpy(&cookie, buffer + 4, COOKIE_SIZE);
 
     Reservation *reservation = find_reservation(&server->reservations, reservation_id, cookie);
-    if (reservation == NULL || (reservation->first_ticket_id == NO_TICKETS && reservation->expiration_time < time(NULL))) {
+    if (reservation == NULL || (reservation->first_ticket_id == NO_TICKETS
+        && reservation->expiration_time < (uint64_t) time(NULL))) {
         send_bad_request(reservation_id, server->socket_fd, client_address);
         return;
     }
@@ -581,7 +584,7 @@ void process_incoming_messages(Server *server) {
 
     do {
         read_length = read_message(server->socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
-        char* client_ip = inet_ntoa(client_address.sin_addr);
+        char *client_ip = inet_ntoa(client_address.sin_addr);
         uint16_t client_port = ntohs(client_address.sin_port);
         printf("received %zd bytes from client %s:%u: '%d', time: %ld\n", read_length, client_ip, client_port,
                shared_buffer[0], time(NULL));
