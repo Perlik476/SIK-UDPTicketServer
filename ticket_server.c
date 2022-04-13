@@ -292,6 +292,7 @@ Server initialize_server(int argc, char *argv[]) {
     Parameters parameters = parse_args(argc, argv);
     DynamicArray event_array = read_file(&parameters);
 
+    srand(2137); // TODO
     int socket_fd = bind_socket(parameters.port);
 
     ReservationsContainer reservations = (ReservationsContainer) { .array = new_dynamic_array(),
@@ -304,13 +305,11 @@ Server initialize_server(int argc, char *argv[]) {
 
 #define BUFFER_SIZE 66000
 
-struct __attribute__((__packed__)) EventToSend {
+typedef struct __attribute__((__packed__)) EventToSend {
     uint32_t event_id;
     uint16_t ticket_count;
     uint8_t description_length;
-};
-
-typedef struct EventToSend EventToSend;
+} EventToSend;
 
 void send_events(Server *server, struct sockaddr_in client_address) {
     char message[MAX_MESSAGE_LENGTH];
@@ -564,41 +563,46 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     send_message(server->socket_fd, &client_address, message, message_length);
 }
 
-int main(int argc, char *argv[]) {
-    Server server = initialize_server(argc, argv);
+void destroy_server(Server *server) {
+    for (size_t i = 0; i < server->event_array.count; i++) {
+        Event *event = server->event_array.array[i];
+        free(event->description);
+    }
+    destroy_dynamic_array(&server->event_array);
+    destroy_dynamic_array(&server->reservations.array);
+    free(server->event_array.array);
+    free(server->reservations.array.array);
+}
 
-    srand(2137); // TODO
-
+void process_incoming_messages(Server *server) {
     char shared_buffer[BUFFER_SIZE];
-
     struct sockaddr_in client_address;
     size_t read_length;
+
     do {
-        read_length = read_message(server.socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
+        read_length = read_message(server->socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
         char* client_ip = inet_ntoa(client_address.sin_addr);
         uint16_t client_port = ntohs(client_address.sin_port);
         printf("received %zd bytes from client %s:%u: '%d', time: %ld\n", read_length, client_ip, client_port,
                shared_buffer[0], time(NULL));
-        check_outdated_reservations(&server);
+        check_outdated_reservations(server);
         if (shared_buffer[0] == GET_EVENTS && read_length == 1) {
-            send_events(&server, client_address);
+            send_events(server, client_address);
         }
         else if (shared_buffer[0] == GET_RESERVATION && read_length == 7) {
-            process_reservation(shared_buffer + 1, &server, client_address);
+            process_reservation(shared_buffer + 1, server, client_address);
         }
         else if (shared_buffer[0] == GET_TICKETS && read_length == 53) {
-            process_tickets(shared_buffer + 1, &server, client_address);
+            process_tickets(shared_buffer + 1, server, client_address);
         }
     } while (read_length > 0); // TODO
+}
 
-    for (size_t i = 0; i < server.event_array.count; i++) {
-        Event *event = server.event_array.array[i];
-        free(event->description);
-    }
-    destroy_dynamic_array(&server.event_array);
-    destroy_dynamic_array(&server.reservations.array);
-    free(server.event_array.array);
-    free(server.reservations.array.array);
+int main(int argc, char *argv[]) {
+    Server server = initialize_server(argc, argv);
+
+    process_incoming_messages(&server);
+    destroy_server(&server);
 
     return 0;
 }
