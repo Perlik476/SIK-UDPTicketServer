@@ -13,6 +13,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <unistd.h>
 
 #define GET_EVENTS 1
 #define EVENTS 2
@@ -222,56 +223,59 @@ void send_message(int socket_fd, const struct sockaddr_in *client_address, const
     ENSURE(sent_length == (ssize_t) length);
 }
 
-
 Parameters parse_args(int argc, char *argv[]) {
-    if (argc > 7 || argc < 3 || !(argc & 1)) {
-        error("improper usage.");
-    }
-
     FILE *file_ptr = NULL;
     int port = 2022;
     int time_limit = 5;
 
     bool file_set = false;
-    bool port_set = false;
-    bool time_set = false;
 
-    for (int current_arg = 1; current_arg < argc; current_arg += 2) {
-        if (strcmp(argv[current_arg], "-f") == 0) {
-            if (file_set) {
-                error("file already set.");
-            }
-            file_set = true;
-            file_ptr = fopen(argv[current_arg + 1], "r");
-            if (!file_ptr) {
-                error("opening of file failed.");
-            }
+    int flags, opt;
+    int nsecs, tfnd;
+
+    nsecs = 0;
+    tfnd = 0;
+    flags = 0;
+    while ((opt = getopt(argc, argv, "f:p:t:")) != -1) {
+        char *ptr;
+        switch (opt) {
+            case 'f':
+                if (file_set) {
+//                    error("file already set."); // TODO
+                    fclose(file_ptr);
+                }
+                file_set = true;
+                file_ptr = fopen(optarg, "r");
+                if (!file_ptr) {
+                    error("opening of file failed.");
+                }
+                break;
+            case 'p':
+                port = (int) strtol(optarg, &ptr, 10);
+                if (*ptr != '\0' || port < 1024 || port > 65535) { // TODO
+                    error("illegal port.");
+                }
+                break;
+            case 't':
+                time_limit = (int) strtol(optarg, &ptr, 10);
+                if (*ptr != '\0' || time_limit < 1 || time_limit > 86400) {
+                    error("illegal time.");
+                }
+                break;
+            default:
+                error("improper usage");
         }
-        else if (strcmp(argv[current_arg], "-p") == 0) {
-            if (port_set) {
-                error("port already set.");
-            }
-            port_set = true;
-            char *ptr;
-            port = (int) strtol(argv[current_arg + 1], &ptr, 10);
-            if (*ptr != '\0' || port < 1024 || port > 65535) {
-                error("illegal port.");
-            }
-        }
-        else if (strcmp(argv[current_arg], "-t") == 0) {
-            if (time_set) {
-                error("time already set.");
-            }
-            time_set = true;
-            char *ptr;
-            time_limit = (int) strtol(argv[current_arg + 1], &ptr, 10);
-            if (*ptr != '\0' || time_limit < 1 || time_limit > 86400) {
-                error("illegal time.");
-            }
-        }
-        else {
-            error("unexpected expression.");
-        }
+    }
+
+//    printf("flags=%d; tfnd=%d; optind=%d\n", flags, tfnd, optind);
+//    printf("argc: %d\n", argc);
+
+    if (optind < argc) { // TODO
+        error("improper usage.");
+    }
+
+    if (strcmp(argv[argc - 1], "--") == 0) { // TODO
+        error("improper usage.");
     }
 
     if (!file_ptr) {
@@ -280,6 +284,65 @@ Parameters parse_args(int argc, char *argv[]) {
 
     return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
 }
+
+
+//Parameters parse_args(int argc, char *argv[]) {
+//    if (argc > 7 || argc < 3 || !(argc & 1)) {
+//        error("improper usage.");
+//    }
+//
+//    FILE *file_ptr = NULL;
+//    int port = 2022;
+//    int time_limit = 5;
+//
+//    bool file_set = false;
+//    bool port_set = false;
+//    bool time_set = false;
+//
+//    for (int current_arg = 1; current_arg < argc; current_arg += 2) {
+//        if (strcmp(argv[current_arg], "-f") == 0) {
+//            if (file_set) {
+//                error("file already set.");
+//            }
+//            file_set = true;
+//            file_ptr = fopen(argv[current_arg + 1], "r");
+//            if (!file_ptr) {
+//                error("opening of file failed.");
+//            }
+//        }
+//        else if (strcmp(argv[current_arg], "-p") == 0) {
+//            if (port_set) {
+//                error("port already set.");
+//            }
+//            port_set = true;
+//            char *ptr;
+//            port = (int) strtol(argv[current_arg + 1], &ptr, 10);
+//            if (*ptr != '\0' || port < 1024 || port > 65535) {
+//                error("illegal port.");
+//            }
+//        }
+//        else if (strcmp(argv[current_arg], "-t") == 0) {
+//            if (time_set) {
+//                error("time already set.");
+//            }
+//            time_set = true;
+//            char *ptr;
+//            time_limit = (int) strtol(argv[current_arg + 1], &ptr, 10);
+//            if (*ptr != '\0' || time_limit < 1 || time_limit > 86400) {
+//                error("illegal time.");
+//            }
+//        }
+//        else {
+//            error("unexpected expression.");
+//        }
+//    }
+//
+//    if (!file_ptr) {
+//        error("file not set.");
+//    }
+//
+//    return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
+//}
 
 #define BUFFER_SIZE 66000
 
@@ -438,8 +501,8 @@ void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t 
     reservations->array.count = current_index;
     reservations->outdated_count = 0;
     reservations->first_not_outdated = 0;
-    while (reservations->array.reserved / 2 > current_index) {
-        reservations->array.reserved /= 2;
+    while (reservations->array.reserved / 4 > current_index) {
+        reservations->array.reserved /= 4;
     }
 
     if (current_index == 0 && reservations->array.reserved != 1) {
