@@ -27,17 +27,6 @@
 #define NO_TICKETS (-1)
 #define MAX_MESSAGE_LENGTH 65507
 
-// Evaluate `x`: if non-zero, describe it as a standard error code and exit with an error.
-#define CHECK(x)                                                          \
-    do {                                                                  \
-        int err = (x);                                                    \
-        if (err != 0) {                                                   \
-            fprintf(stderr, "Error: %s returned %d in %s at %s:%d\n%s\n", \
-                #x, err, __func__, __FILE__, __LINE__, strerror(err));    \
-            exit(EXIT_FAILURE);                                           \
-        }                                                                 \
-    } while (0)
-
 // Evaluate `x`: if false, print an error message and exit with an error.
 #define ENSURE(x)                                                         \
     do {                                                                  \
@@ -70,20 +59,6 @@
 
 // Note: the while loop above wraps the statements so that the macro can be used with a semicolon
 // for example: if (a) CHECK(x); else CHECK(y);
-
-
-// Print an error message and exit with an error.
-void fatal(const char *fmt, ...) {
-    va_list fmt_args;
-
-    fprintf(stderr, "Error: ");
-    va_start(fmt_args, fmt);
-    vfprintf(stderr, fmt, fmt_args);
-    va_end(fmt_args);
-    fprintf(stderr, "\n");
-    exit(EXIT_FAILURE);
-}
-
 
 uint64_t static inline htonll(uint64_t x) {
     return ((((uint64_t)htonl(x)) << 32) + htonl((x) >> 32));
@@ -149,7 +124,7 @@ void add_to_dynamic_array(DynamicArray *array, void *item) {
     array->array[array->count - 1] = item;
 }
 
-void print_event_array_dyn(DynamicArray *array) {
+void print_event_array_dyn(DynamicArray *array) { // TODO
     Event **events = (Event **) array->array;
     for (size_t i = 0; i < array->count; i++) {
         printf("%zu: desc: '%s', tickets: %hu\n", i, events[i]->description, events[i]->tickets);
@@ -230,18 +205,13 @@ Parameters parse_args(int argc, char *argv[]) {
 
     bool file_set = false;
 
-    int flags, opt;
-    int nsecs, tfnd;
+    int opt;
 
-    nsecs = 0;
-    tfnd = 0;
-    flags = 0;
     while ((opt = getopt(argc, argv, "f:p:t:")) != -1) {
         char *ptr;
         switch (opt) {
             case 'f':
                 if (file_set) {
-//                    error("file already set."); // TODO
                     fclose(file_ptr);
                 }
                 file_set = true;
@@ -267,17 +237,12 @@ Parameters parse_args(int argc, char *argv[]) {
         }
     }
 
-//    printf("flags=%d; tfnd=%d; optind=%d\n", flags, tfnd, optind);
-//    printf("argc: %d\n", argc);
-
     if (optind < argc) { // TODO
         error("improper usage.");
     }
-
     if (strcmp(argv[argc - 1], "--") == 0) { // TODO
         error("improper usage.");
     }
-
     if (!file_ptr) {
         error("file not set.");
     }
@@ -285,64 +250,57 @@ Parameters parse_args(int argc, char *argv[]) {
     return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
 }
 
+size_t static inline event_message_size(Event *event) {
+    return 7 + event->description_length;
+}
 
-//Parameters parse_args(int argc, char *argv[]) {
-//    if (argc > 7 || argc < 3 || !(argc & 1)) {
-//        error("improper usage.");
-//    }
-//
-//    FILE *file_ptr = NULL;
-//    int port = 2022;
-//    int time_limit = 5;
-//
-//    bool file_set = false;
-//    bool port_set = false;
-//    bool time_set = false;
-//
-//    for (int current_arg = 1; current_arg < argc; current_arg += 2) {
-//        if (strcmp(argv[current_arg], "-f") == 0) {
-//            if (file_set) {
-//                error("file already set.");
-//            }
-//            file_set = true;
-//            file_ptr = fopen(argv[current_arg + 1], "r");
-//            if (!file_ptr) {
-//                error("opening of file failed.");
-//            }
-//        }
-//        else if (strcmp(argv[current_arg], "-p") == 0) {
-//            if (port_set) {
-//                error("port already set.");
-//            }
-//            port_set = true;
-//            char *ptr;
-//            port = (int) strtol(argv[current_arg + 1], &ptr, 10);
-//            if (*ptr != '\0' || port < 1024 || port > 65535) {
-//                error("illegal port.");
-//            }
-//        }
-//        else if (strcmp(argv[current_arg], "-t") == 0) {
-//            if (time_set) {
-//                error("time already set.");
-//            }
-//            time_set = true;
-//            char *ptr;
-//            time_limit = (int) strtol(argv[current_arg + 1], &ptr, 10);
-//            if (*ptr != '\0' || time_limit < 1 || time_limit > 86400) {
-//                error("illegal time.");
-//            }
-//        }
-//        else {
-//            error("unexpected expression.");
-//        }
-//    }
-//
-//    if (!file_ptr) {
-//        error("file not set.");
-//    }
-//
-//    return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
-//}
+DynamicArray read_file(Parameters *parameters) {
+    char *buff = NULL;
+    size_t buff_len;
+    char *description;
+    int description_length;
+
+    uint16_t tickets;
+    size_t events_message_size = 1;
+
+    DynamicArray event_array = new_dynamic_array();
+
+    while ((description_length = getline(&buff, &buff_len, parameters->file_ptr)) >= 0) {
+        description = safe_malloc((size_t) (description_length - 1) * sizeof(char));
+        memcpy(description, buff, description_length - 1);
+
+        getline(&buff, &buff_len, parameters->file_ptr);
+        tickets = (uint16_t) strtol(buff, NULL, 10);
+
+        Event *event = safe_malloc(sizeof(Event));
+        *event = (Event) { .description = description, .description_length = description_length - 1, .tickets = tickets };
+        if (events_message_size + event_message_size(event) > MAX_MESSAGE_LENGTH) {
+            free(event);
+            break;
+        }
+        events_message_size += event_message_size(event);
+        add_to_dynamic_array(&event_array, event);
+    }
+
+    fclose(parameters->file_ptr);
+    free(buff);
+
+    return event_array;
+}
+
+Server initialize_server(int argc, char *argv[]) {
+    Parameters parameters = parse_args(argc, argv);
+    DynamicArray event_array = read_file(&parameters);
+
+    int socket_fd = bind_socket(parameters.port);
+
+    ReservationsContainer reservations = (ReservationsContainer) { .array = new_dynamic_array(),
+            .first_not_outdated = 0, .outdated_count = 0, .next_id = 1000000 };
+    Server server = (Server) { .parameters = parameters, .event_array = event_array, .socket_fd = socket_fd,
+            .reservations =  reservations };
+
+    return server;
+}
 
 #define BUFFER_SIZE 66000
 
@@ -355,23 +313,12 @@ struct __attribute__((__packed__)) EventToSend {
 typedef struct EventToSend EventToSend;
 
 void send_events(Server *server, struct sockaddr_in client_address) {
-    size_t message_size = 1;
-    size_t number_of_events_to_send = 0;
-    for (size_t i = 0; i < server->event_array.count; i++) {
-        uint8_t event_message_size = 7 + ((Event *) server->event_array.array[i])->description_length;
-        if (message_size + event_message_size > MAX_MESSAGE_LENGTH) {
-            break;
-        }
-        message_size += event_message_size;
-        number_of_events_to_send++;
-    }
-
-    char message[message_size];
+    char message[MAX_MESSAGE_LENGTH];
     message[0] = EVENTS;
     size_t index = 1;
     EventToSend event_to_send;
 
-    for (size_t i = 0; i < number_of_events_to_send; i++) {
+    for (size_t i = 0; i < server->event_array.count; i++) {
         Event *event = server->event_array.array[i];
         event_to_send.event_id = htonl(i);
         event_to_send.ticket_count = htons(event->tickets);
@@ -384,7 +331,7 @@ void send_events(Server *server, struct sockaddr_in client_address) {
     }
 
     printf("%s\n", message);
-    send_message(server->socket_fd, &client_address, message, message_size);
+    send_message(server->socket_fd, &client_address, message, index);
 }
 
 void send_bad_request(uint32_t id, int socket_fd, struct sockaddr_in client_address) {
@@ -572,10 +519,8 @@ Reservation *find_reservation(ReservationsContainer *reservations, uint32_t rese
 }
 
 void ticket_id_to_str(char *str, int64_t id) {
-//    printf("id: %ld\n", id);
     for (size_t i = 0; i < 7; i++) {
         char temp = (char) (id % 36);
-//        printf("  temp: %d\n", temp);
         str[i] = temp < 10 ? (48 + temp) : (55 + temp);
         id /= 36;
     }
@@ -590,16 +535,12 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
 
     memcpy(&cookie, buffer + 4, COOKIE_SIZE);
 
-//    printf("reservation_id: %d\n", reservation_id);
-
     Reservation *reservation = find_reservation(&server->reservations, reservation_id, cookie);
     if (reservation == NULL || (reservation->first_ticket_id == NO_TICKETS && reservation->expiration_time < time(NULL))) {
         send_bad_request(reservation_id, server->socket_fd, client_address);
         return;
     }
     uint16_t ticket_count = reservation->ticket_count;
-
-//    printf("ticket_count: %d\n", ticket_count);
 
     if (reservation->first_ticket_id == NO_TICKETS) {
         reservation->first_ticket_id = server->next_ticket_id;
@@ -610,7 +551,6 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     char message[message_length];
     message[0] = TICKETS;
 
-//    memset(message + 7, '0', 7 * ticket_count);
     for (size_t i = 0; i < ticket_count; i++) {
         ticket_id_to_str(message + 7 * (i + 1), reservation->first_ticket_id + (int64_t) i);
     }
@@ -621,55 +561,20 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     memcpy(message + 1, &reservation_id, 4);
     memcpy(message + 5, &ticket_count, 2);
 
-//    printf("message_length: %zu\n", message_length);
-//    for (size_t i = 0; i < message_length; i++) {
-//        printf("%d, ", message[i]);
-//    }
-//    printf("\n");
-
     send_message(server->socket_fd, &client_address, message, message_length);
 }
 
 int main(int argc, char *argv[]) {
-    Parameters parameters = parse_args(argc, argv);
-
-    char *buff = NULL;
-    size_t buff_len;
-    char *description;
-    int description_length;
-    uint16_t tickets;
-
-    DynamicArray event_array = new_dynamic_array();
-
-    while ((description_length = getline(&buff, &buff_len, parameters.file_ptr)) >= 0) {
-        description = safe_malloc((size_t) (description_length - 1) * sizeof(char));
-        memcpy(description, buff, description_length - 1);
-
-        getline(&buff, &buff_len, parameters.file_ptr);
-        tickets = (uint16_t) strtol(buff, NULL, 10);
-
-        Event *event = safe_malloc(sizeof(Event));
-        *event = (Event) { .description = description, .description_length = description_length - 1, .tickets = tickets };
-        add_to_dynamic_array(&event_array, event);
-    }
-
-    fclose(parameters.file_ptr);
-
-//    print_event_array_dyn(&event_array);
-
-    int socket_fd = bind_socket(parameters.port);
-    char shared_buffer[BUFFER_SIZE];
-
-    Server server = (Server) { .parameters = parameters, .event_array = event_array, .socket_fd = socket_fd,
-                               .reservations = (ReservationsContainer) { .array = new_dynamic_array(),
-                                         .first_not_outdated = 0, .outdated_count = 0, .next_id = 1000000 } };
+    Server server = initialize_server(argc, argv);
 
     srand(2137); // TODO
+
+    char shared_buffer[BUFFER_SIZE];
 
     struct sockaddr_in client_address;
     size_t read_length;
     do {
-        read_length = read_message(socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
+        read_length = read_message(server.socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
         char* client_ip = inet_ntoa(client_address.sin_addr);
         uint16_t client_port = ntohs(client_address.sin_port);
         printf("received %zd bytes from client %s:%u: '%d', time: %ld\n", read_length, client_ip, client_port,
@@ -684,17 +589,16 @@ int main(int argc, char *argv[]) {
         else if (shared_buffer[0] == GET_TICKETS && read_length == 53) {
             process_tickets(shared_buffer + 1, &server, client_address);
         }
-    } while (read_length > 0);
+    } while (read_length > 0); // TODO
 
-    for (size_t i = 0; i < event_array.count; i++) {
-        Event *event = event_array.array[i];
+    for (size_t i = 0; i < server.event_array.count; i++) {
+        Event *event = server.event_array.array[i];
         free(event->description);
     }
-    destroy_dynamic_array(&event_array);
+    destroy_dynamic_array(&server.event_array);
     destroy_dynamic_array(&server.reservations.array);
-    free(event_array.array);
+    free(server.event_array.array);
     free(server.reservations.array.array);
-    free(buff);
 
     return 0;
 }
