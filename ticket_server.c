@@ -25,6 +25,9 @@
 #define COOKIE_SIZE 48
 #define NO_TICKETS (-1)
 #define MAX_MESSAGE_LENGTH 65507
+#define GET_EVENTS_MESSAGE_SIZE 1
+#define GET_RESERVATION_MESSAGE_SIZE 7
+#define GET_TICKETS_MESSAGE_SIZE 53
 
 // Evaluate `x`: if false, print an error message and exit with an fatal.
 #define ENSURE(x)                                                         \
@@ -202,6 +205,7 @@ typedef struct Server {
     DynamicArray event_array;
     ReservationsContainer reservations;
     int64_t next_ticket_id;
+    uint64_t time_when_received;
     char message[MAX_MESSAGE_LENGTH];
 } Server;
 
@@ -228,7 +232,7 @@ Parameters parse_args(int argc, char *argv[]) {
                 break;
             case 'p':
                 port = (int) strtol(optarg, &ptr, 10);
-                if (*ptr != '\0' || port < 0 || port > 65535) { // TODO
+                if (*ptr != '\0' || port < 0 || port > 65535) {
                     fatal_usage("parameter value is not a proper port.");
                 }
                 break;
@@ -281,7 +285,8 @@ DynamicArray read_file(Parameters *parameters) {
         tickets = (uint16_t) strtol(buff, NULL, 10);
 
         Event *event = safe_malloc(sizeof(Event));
-        *event = (Event) { .description = description, .description_length = description_length - 1, .tickets = tickets };
+        *event = (Event) { .description = description, .description_length = description_length - 1,
+                           .tickets = tickets };
         if (events_message_size + event_message_size(event) > MAX_MESSAGE_LENGTH) {
             free(event);
             break;
@@ -367,7 +372,7 @@ Reservation *add_new_reservation(Server *server, uint32_t event_id, uint16_t tic
     char *cookie = get_new_cookie(id);
 
     *reservation = (Reservation) { .event_id = event_id, .ticket_count = ticket_count, .reservation_id = id,
-                                   .expiration_time = time(NULL) + server->parameters.time_limit,
+                                   .expiration_time = server->time_when_received + server->parameters.time_limit,
                                    .first_ticket_id = NO_TICKETS };
     memcpy(reservation->cookie, cookie, COOKIE_SIZE);
     free(cookie);
@@ -465,12 +470,13 @@ void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t 
         reservations->reservations_array.array = safe_malloc(sizeof(void *));
     }
     else {
-        reservations->reservations_array.array = safe_realloc(reservations->reservations_array.array, reservations->reservations_array.reserved * sizeof(void *));
+        reservations->reservations_array.array = safe_realloc(reservations->reservations_array.array,
+                                                            reservations->reservations_array.reserved * sizeof(void *));
     }
 }
 
 void check_outdated_reservations(Server *server) {
-    uint64_t current_time = time(NULL);
+    uint64_t current_time = server->time_when_received;
 
     ReservationsContainer *reservations = &server->reservations;
     DynamicArray *array = &reservations->reservations_array;
@@ -543,7 +549,7 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
 
     Reservation *reservation = find_reservation(&server->reservations, reservation_id, cookie);
     if (reservation == NULL || (reservation->first_ticket_id == NO_TICKETS
-        && reservation->expiration_time < (uint64_t) time(NULL))) {
+        && reservation->expiration_time < server->time_when_received)) {
         send_bad_request(reservation_id, server->socket_fd, client_address);
         return;
     }
@@ -585,25 +591,31 @@ void destroy_server(Server *server) {
 }
 
 _Noreturn void process_incoming_messages(Server *server) {
-    char shared_buffer[BUFFER_SIZE];
+    char buffer[BUFFER_SIZE];
     struct sockaddr_in client_address;
     size_t read_length;
 
     print_debug("Listening on port %u\n", server->parameters.port);
     while (true) {
-        read_length = read_message(server->socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
+        read_length = read_message(server->socket_fd, &client_address, buffer, sizeof(buffer));
+
         char *client_ip = inet_ntoa(client_address.sin_addr);
         uint16_t client_port = ntohs(client_address.sin_port);
-        print_debug("Received %zd bytes from client %s:%u at time: %ld\n", read_length, client_ip, client_port, time(NULL));
+        server->time_when_received = time(NULL);
+
+        print_debug("Received %zd bytes from client %s:%u at time: %ld\n", read_length, client_ip, client_port,
+                    server->time_when_received);
+
         check_outdated_reservations(server);
-        if (shared_buffer[0] == GET_EVENTS && read_length == 1) {
+
+        if (buffer[0] == GET_EVENTS && read_length == GET_EVENTS_MESSAGE_SIZE) {
             send_events(server, client_address);
         }
-        else if (shared_buffer[0] == GET_RESERVATION && read_length == 7) {
-            process_reservation(shared_buffer + 1, server, client_address);
+        else if (buffer[0] == GET_RESERVATION && read_length == GET_RESERVATION_MESSAGE_SIZE) {
+            process_reservation(buffer + 1, server, client_address);
         }
-        else if (shared_buffer[0] == GET_TICKETS && read_length == 53) {
-            process_tickets(shared_buffer + 1, server, client_address);
+        else if (buffer[0] == GET_TICKETS && read_length == GET_TICKETS_MESSAGE_SIZE) {
+            process_tickets(buffer + 1, server, client_address);
         }
         else {
             print_debug("Improper message format.\n");
