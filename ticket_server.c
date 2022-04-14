@@ -6,7 +6,6 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <stdio.h>
 #include <stdint.h>
 #include <time.h>
 #include <errno.h>
@@ -29,7 +28,6 @@
 #define GET_RESERVATION_MESSAGE_SIZE 7
 #define GET_TICKETS_MESSAGE_SIZE 53
 
-// Evaluate `x`: if false, print an error message and exit with an fatal.
 #define ENSURE(x)                                                         \
     do {                                                                  \
         bool result = (x);                                                \
@@ -40,7 +38,6 @@
         }                                                                 \
     } while (0)
 
-// Check if errno is non-zero, and if so, print an error message and exit with an fatal.
 #define PRINT_ERRNO()                                                  \
     do {                                                               \
         if (errno != 0) {                                              \
@@ -50,8 +47,6 @@
         }                                                              \
     } while (0)
 
-
-// Set `errno` to 0 and evaluate `x`. If `errno` changed, describe it and exit.
 #define CHECK_ERRNO(x)                                                             \
     do {                                                                           \
         errno = 0;                                                                 \
@@ -59,20 +54,15 @@
         PRINT_ERRNO();                                                             \
     } while (0)
 
-// Note: the while loop above wraps the statements so that the macro can be used with a semicolon
-// for example: if (a) CHECK(x); else CHECK(y);
-
 int bind_socket(uint16_t port) {
-    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0); // creating IPv4 UDP socket
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
     ENSURE(socket_fd > 0);
-    // after socket() call; we should close(sock) on any execution path;
 
     struct sockaddr_in server_address;
-    server_address.sin_family = AF_INET; // IPv4
-    server_address.sin_addr.s_addr = htonl(INADDR_ANY); // listening on all interfaces
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = htonl(INADDR_ANY);
     server_address.sin_port = htons(port);
 
-    // bind the socket to a concrete address
     CHECK_ERRNO(bind(socket_fd, (struct sockaddr *) &server_address,
                      (socklen_t) sizeof(server_address)));
 
@@ -81,7 +71,7 @@ int bind_socket(uint16_t port) {
 
 size_t read_message(int socket_fd, struct sockaddr_in *client_address, char *buffer, size_t max_length) {
     socklen_t address_length = (socklen_t) sizeof(*client_address);
-    int flags = 0; // we do not request anything special
+    int flags = 0;
     errno = 0;
     ssize_t len = recvfrom(socket_fd, buffer, max_length, flags,
                            (struct sockaddr *) client_address, &address_length);
@@ -247,11 +237,11 @@ Parameters parse_args(int argc, char *argv[]) {
         }
     }
 
-    if (optind < argc || strcmp(argv[argc - 1], "--") == 0) { // TODO
+    if (optind < argc || strcmp(argv[argc - 1], "--") == 0) {
         fatal_usage("improper_usage.");
     }
     if (!file_ptr) {
-        fatal("file not set.");
+        fatal_usage("events file not set.");
     }
 
     return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
@@ -305,13 +295,14 @@ Server initialize_server(int argc, char *argv[]) {
     Parameters parameters = parse_args(argc, argv);
     DynamicArray event_array = read_file(&parameters);
 
-    srand(2137); // TODO
+    uint64_t current_time = time(NULL);
+    srand(21 * current_time + 37);
     int socket_fd = bind_socket(parameters.port);
 
     ReservationsContainer reservations = (ReservationsContainer) { .reservations_array = new_dynamic_array(),
             .first_not_outdated = 0, .outdated_count = 0, .next_id = 1000000 };
     Server server = (Server) { .parameters = parameters, .event_array = event_array, .socket_fd = socket_fd,
-            .reservations =  reservations };
+            .reservations =  reservations, .time_when_received = current_time };
 
     return server;
 }
