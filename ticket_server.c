@@ -1,4 +1,4 @@
-#define  _GNU_SOURCE
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +24,7 @@
 #define NO_TICKETS (-1)
 #define MAX_MESSAGE_LENGTH 65507
 
-// Evaluate `x`: if false, print an error message and exit with an error.
+// Evaluate `x`: if false, print an error message and exit with an fatal.
 #define ENSURE(x)                                                         \
     do {                                                                  \
         bool result = (x);                                                \
@@ -35,7 +35,7 @@
         }                                                                 \
     } while (0)
 
-// Check if errno is non-zero, and if so, print an error message and exit with an error.
+// Check if errno is non-zero, and if so, print an error message and exit with an fatal.
 #define PRINT_ERRNO()                                                  \
     do {                                                               \
         if (errno != 0) {                                              \
@@ -65,15 +65,20 @@ static inline uint64_t ntohll(uint64_t x) {
     return htonll(x);
 }
 
-void error(char *message) {
-    fprintf(stderr, "%s\n", message);
+void fatal(char *message) {
+    fprintf(stderr, "Error: %s\n", message);
+    exit(1);
+}
+
+void fatal_usage(char *message) {
+    fprintf(stderr, "Error: %s\nUsage: -f <path to events file> [-p <port>] [-t <timeout>]", message);
     exit(1);
 }
 
 void *safe_malloc(size_t size) {
     void *ptr = malloc(size);
     if (!ptr) {
-        error("memory allocation failed.");
+        fatal("memory allocation failed.");
     }
     return ptr;
 }
@@ -81,7 +86,7 @@ void *safe_malloc(size_t size) {
 void *safe_realloc(void *ptr, size_t size) {
     ptr = realloc(ptr, size);
     if (!ptr) {
-        error("memory allocation failed.");
+        fatal("memory allocation failed.");
     }
     return ptr;
 }
@@ -135,7 +140,7 @@ void destroy_dynamic_array(DynamicArray *array) {
 }
 
 typedef struct ReservationsContainer {
-    DynamicArray array;
+    DynamicArray reservations_array;
     size_t outdated_count;
     size_t first_not_outdated;
     uint32_t next_id;
@@ -156,6 +161,7 @@ typedef struct Server {
     DynamicArray event_array;
     ReservationsContainer reservations;
     int64_t next_ticket_id;
+    char message[MAX_MESSAGE_LENGTH];
 } Server;
 
 int bind_socket(uint16_t port) {
@@ -201,7 +207,6 @@ Parameters parse_args(int argc, char *argv[]) {
     int time_limit = 5;
 
     bool file_set = false;
-
     int opt;
 
     while ((opt = getopt(argc, argv, "f:p:t:")) != -1) {
@@ -214,34 +219,31 @@ Parameters parse_args(int argc, char *argv[]) {
                 file_set = true;
                 file_ptr = fopen(optarg, "r");
                 if (!file_ptr) {
-                    error("opening of file failed.");
+                    fatal_usage("opening of the events file failed.");
                 }
                 break;
             case 'p':
                 port = (int) strtol(optarg, &ptr, 10);
-                if (*ptr != '\0' || port < 1024 || port > 65535) { // TODO
-                    error("illegal port.");
+                if (*ptr != '\0' || port < 0 || port > 65535) { // TODO
+                    fatal_usage("parameter value is not a proper port.");
                 }
                 break;
             case 't':
                 time_limit = (int) strtol(optarg, &ptr, 10);
                 if (*ptr != '\0' || time_limit < 1 || time_limit > 86400) {
-                    error("illegal time.");
+                    fatal_usage("parameter value is not a proper time limit.");
                 }
                 break;
             default:
-                error("improper usage");
+                fatal_usage("improper_usage.");
         }
     }
 
-    if (optind < argc) { // TODO
-        error("improper usage.");
-    }
-    if (strcmp(argv[argc - 1], "--") == 0) { // TODO
-        error("improper usage.");
+    if (optind < argc || strcmp(argv[argc - 1], "--") == 0) { // TODO
+        fatal_usage("improper_usage.");
     }
     if (!file_ptr) {
-        error("file not set.");
+        fatal("file not set.");
     }
 
     return (Parameters) { .file_ptr = file_ptr, .port = port, .time_limit = time_limit };
@@ -297,7 +299,7 @@ Server initialize_server(int argc, char *argv[]) {
     srand(2137); // TODO
     int socket_fd = bind_socket(parameters.port);
 
-    ReservationsContainer reservations = (ReservationsContainer) { .array = new_dynamic_array(),
+    ReservationsContainer reservations = (ReservationsContainer) { .reservations_array = new_dynamic_array(),
             .first_not_outdated = 0, .outdated_count = 0, .next_id = 1000000 };
     Server server = (Server) { .parameters = parameters, .event_array = event_array, .socket_fd = socket_fd,
             .reservations =  reservations };
@@ -305,7 +307,7 @@ Server initialize_server(int argc, char *argv[]) {
     return server;
 }
 
-#define BUFFER_SIZE 66000
+#define BUFFER_SIZE 65507
 
 typedef struct __attribute__((__packed__)) EventToSend {
     uint32_t event_id;
@@ -314,7 +316,7 @@ typedef struct __attribute__((__packed__)) EventToSend {
 } EventToSend;
 
 void send_events(Server *server, struct sockaddr_in client_address) {
-    char message[MAX_MESSAGE_LENGTH];
+    char *message = server->message;
     message[0] = EVENTS;
     size_t index = 1;
     EventToSend event_to_send;
@@ -368,7 +370,7 @@ Reservation *add_new_reservation(Server *server, uint32_t event_id, uint16_t tic
 
     ((Event *) server->event_array.array[event_id])->tickets -= ticket_count;
 
-    add_to_dynamic_array(&reservations->array, reservation);
+    add_to_dynamic_array(&reservations->reservations_array, reservation);
     return reservation;
 }
 
@@ -418,7 +420,7 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
     size_t message_length = 1 + sizeof(ReservationToSend);
     printf("%lu\n", sizeof(ReservationToSend));
 
-    char message[message_length];
+    char *message = server->message;
     message[0] = RESERVATION;
     memcpy(message + 1, &reservation_net, sizeof(ReservationToSend));
 
@@ -426,7 +428,7 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
 }
 
 void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t current_time) {
-    DynamicArray *array = &reservations->array;
+    DynamicArray *array = &reservations->reservations_array;
     size_t current_index = 0;
     for (size_t i = 0; i < array->count; i++) {
         Reservation *reservation = (Reservation *)array->array[i];
@@ -446,19 +448,20 @@ void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t 
         }
     }
 
-    reservations->array.count = current_index;
+    reservations->reservations_array.count = current_index;
     reservations->outdated_count = 0;
     reservations->first_not_outdated = 0;
-    while (reservations->array.reserved / 4 > current_index) {
-        reservations->array.reserved /= 4;
+
+    while (reservations->reservations_array.reserved / 4 > current_index) {
+        reservations->reservations_array.reserved /= 4;
     }
 
-    if (current_index == 0 && reservations->array.reserved != 1) {
-        free(reservations->array.array);
-        reservations->array.array = safe_malloc(sizeof(void *));
+    if (current_index == 0 && reservations->reservations_array.reserved != 1) {
+        free(reservations->reservations_array.array);
+        reservations->reservations_array.array = safe_malloc(sizeof(void *));
     }
     else {
-        reservations->array.array = safe_realloc(reservations->array.array, reservations->array.reserved * sizeof(void *));
+        reservations->reservations_array.array = safe_realloc(reservations->reservations_array.array, reservations->reservations_array.reserved * sizeof(void *));
     }
 }
 
@@ -467,7 +470,7 @@ void check_outdated_reservations(Server *server) {
     uint64_t current_time = time(NULL);
 
     ReservationsContainer *reservations = &server->reservations;
-    DynamicArray *array = &reservations->array;
+    DynamicArray *array = &reservations->reservations_array;
     for (size_t i = reservations->first_not_outdated; i < array->count; i++) {
         Reservation *reservation = ((Reservation *)array->array[i]);
         if (reservation->expiration_time > current_time) {
@@ -486,18 +489,18 @@ void check_outdated_reservations(Server *server) {
 }
 
 Reservation *find_reservation(ReservationsContainer *reservations, uint32_t reservation_id, char *cookie) {
-    DynamicArray *array = &reservations->array;
+    DynamicArray *array = &reservations->reservations_array;
     if (array->count == 0) {
         return NULL;
     }
+
     long long begin = 0;
     long long end = (int) array->count - 1;
     long long mid = (begin + end) / 2;
     Reservation *reservation;
+
     do {
         reservation = array->array[mid];
-//        printf("1. begin: %d, end: %d, mid: %d, cur: %d, wanted: %d\n", begin, end, mid,
-//               reservation->reservation_id, reservation_id);
         if (reservation->reservation_id == reservation_id) {
             break;
         }
@@ -508,8 +511,6 @@ Reservation *find_reservation(ReservationsContainer *reservations, uint32_t rese
             end = mid - 1;
         }
         mid = (begin + end) / 2;
-//        printf("2. begin: %d, end: %d, mid: %d, cur: %d, wanted: %d\n", begin, end, mid,
-//               reservation->reservation_id, reservation_id);
     } while (end > 0 && begin < (long long) (array->count - 1));
 
     reservation = array->array[mid];
@@ -550,7 +551,7 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     }
 
     size_t message_length = 7 + 7 * ticket_count;
-    char message[message_length];
+    char *message = server->message;
     message[0] = TICKETS;
 
     for (size_t i = 0; i < ticket_count; i++) {
@@ -571,18 +572,19 @@ void destroy_server(Server *server) {
         Event *event = server->event_array.array[i];
         free(event->description);
     }
+
     destroy_dynamic_array(&server->event_array);
-    destroy_dynamic_array(&server->reservations.array);
+    destroy_dynamic_array(&server->reservations.reservations_array);
     free(server->event_array.array);
-    free(server->reservations.array.array);
+    free(server->reservations.reservations_array.array);
 }
 
-void process_incoming_messages(Server *server) {
+_Noreturn void process_incoming_messages(Server *server) {
     char shared_buffer[BUFFER_SIZE];
     struct sockaddr_in client_address;
     size_t read_length;
 
-    do {
+    while (true) {
         read_length = read_message(server->socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
         char *client_ip = inet_ntoa(client_address.sin_addr);
         uint16_t client_port = ntohs(client_address.sin_port);
@@ -598,7 +600,7 @@ void process_incoming_messages(Server *server) {
         else if (shared_buffer[0] == GET_TICKETS && read_length == 53) {
             process_tickets(shared_buffer + 1, server, client_address);
         }
-    } while (read_length > 0); // TODO
+    }
 }
 
 int main(int argc, char *argv[]) {
