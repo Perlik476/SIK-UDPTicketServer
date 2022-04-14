@@ -11,6 +11,7 @@
 #include <time.h>
 #include <errno.h>
 #include <getopt.h>
+#include <unistd.h>
 
 #define GET_EVENTS 1
 #define EVENTS 2
@@ -56,6 +57,43 @@
 
 // Note: the while loop above wraps the statements so that the macro can be used with a semicolon
 // for example: if (a) CHECK(x); else CHECK(y);
+
+int bind_socket(uint16_t port) {
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0); // creating IPv4 UDP socket
+    ENSURE(socket_fd > 0);
+    // after socket() call; we should close(sock) on any execution path;
+
+    struct sockaddr_in server_address;
+    server_address.sin_family = AF_INET; // IPv4
+    server_address.sin_addr.s_addr = htonl(INADDR_ANY); // listening on all interfaces
+    server_address.sin_port = htons(port);
+
+    // bind the socket to a concrete address
+    CHECK_ERRNO(bind(socket_fd, (struct sockaddr *) &server_address,
+                     (socklen_t) sizeof(server_address)));
+
+    return socket_fd;
+}
+
+size_t read_message(int socket_fd, struct sockaddr_in *client_address, char *buffer, size_t max_length) {
+    socklen_t address_length = (socklen_t) sizeof(*client_address);
+    int flags = 0; // we do not request anything special
+    errno = 0;
+    ssize_t len = recvfrom(socket_fd, buffer, max_length, flags,
+                           (struct sockaddr *) client_address, &address_length);
+    if (len < 0) {
+        PRINT_ERRNO();
+    }
+    return (size_t) len;
+}
+
+void send_message(int socket_fd, const struct sockaddr_in *client_address, const char *message, size_t length) {
+    socklen_t address_length = (socklen_t) sizeof(*client_address);
+    int flags = 0;
+    ssize_t sent_length = sendto(socket_fd, message, length, flags,
+                                 (struct sockaddr *) client_address, address_length);
+    ENSURE(sent_length == (ssize_t) length);
+}
 
 static inline uint64_t htonll(uint64_t x) {
     return ((((uint64_t)htonl(x)) << 32) + htonl((x) >> 32));
@@ -126,12 +164,12 @@ void add_to_dynamic_array(DynamicArray *array, void *item) {
     array->array[array->count - 1] = item;
 }
 
-void print_event_array_dyn(DynamicArray *array) { // TODO
-    Event **events = (Event **) array->array;
-    for (size_t i = 0; i < array->count; i++) {
-        printf("%zu: desc: '%s', tickets: %hu\n", i, events[i]->description, events[i]->tickets);
-    }
-}
+//void print_event_array_dyn(DynamicArray *array) { // TODO
+//    Event **events = (Event **) array->array;
+//    for (size_t i = 0; i < array->count; i++) {
+//        printf("%zu: desc: '%s', tickets: %hu\n", i, events[i]->description, events[i]->tickets);
+//    }
+//}
 
 void destroy_dynamic_array(DynamicArray *array) {
     for (size_t i = 0; i < array->count; i++) {
@@ -163,43 +201,6 @@ typedef struct Server {
     int64_t next_ticket_id;
     char message[MAX_MESSAGE_LENGTH];
 } Server;
-
-int bind_socket(uint16_t port) {
-    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0); // creating IPv4 UDP socket
-    ENSURE(socket_fd > 0);
-    // after socket() call; we should close(sock) on any execution path;
-
-    struct sockaddr_in server_address;
-    server_address.sin_family = AF_INET; // IPv4
-    server_address.sin_addr.s_addr = htonl(INADDR_ANY); // listening on all interfaces
-    server_address.sin_port = htons(port);
-
-    // bind the socket to a concrete address
-    CHECK_ERRNO(bind(socket_fd, (struct sockaddr *) &server_address,
-                     (socklen_t) sizeof(server_address)));
-
-    return socket_fd;
-}
-
-size_t read_message(int socket_fd, struct sockaddr_in *client_address, char *buffer, size_t max_length) {
-    socklen_t address_length = (socklen_t) sizeof(*client_address);
-    int flags = 0; // we do not request anything special
-    errno = 0;
-    ssize_t len = recvfrom(socket_fd, buffer, max_length, flags,
-                           (struct sockaddr *) client_address, &address_length);
-    if (len < 0) {
-        PRINT_ERRNO();
-    }
-    return (size_t) len;
-}
-
-void send_message(int socket_fd, const struct sockaddr_in *client_address, const char *message, size_t length) {
-    socklen_t address_length = (socklen_t) sizeof(*client_address);
-    int flags = 0;
-    ssize_t sent_length = sendto(socket_fd, message, length, flags,
-                                 (struct sockaddr *) client_address, address_length);
-    ENSURE(sent_length == (ssize_t) length);
-}
 
 Parameters parse_args(int argc, char *argv[]) {
     FILE *file_ptr = NULL;
@@ -333,8 +334,8 @@ void send_events(Server *server, struct sockaddr_in client_address) {
         index += event->description_length;
     }
 
-    printf("%s\n", message);
     send_message(server->socket_fd, &client_address, message, index);
+    printf("Events sent.\n");
 }
 
 void send_bad_request(uint32_t id, int socket_fd, struct sockaddr_in client_address) {
@@ -343,11 +344,11 @@ void send_bad_request(uint32_t id, int socket_fd, struct sockaddr_in client_addr
     id = htonl(id);
     memcpy(message + 1, &id, 4);
     send_message(socket_fd, &client_address, message, 5);
+    printf("Bad request sent.\n");
 }
 
 char *get_new_cookie(uint32_t reservation_id) {
     char *cookie = safe_malloc(COOKIE_SIZE * sizeof(char));
-    printf("reservation_id: %d\n", reservation_id);
     sprintf(cookie, "%d", reservation_id);
     size_t len = strlen(cookie);
     for (size_t i = len - 1; i < COOKIE_SIZE; i++) {
@@ -383,6 +384,7 @@ typedef struct __attribute__((__packed__)) ReservationToSend {
 } ReservationToSend;
 
 void process_reservation(const char *buffer, Server *server, struct sockaddr_in client_address) {
+    printf("Processing reservation request...\n");
     uint32_t event_id;
     uint16_t ticket_count;
 
@@ -411,20 +413,19 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
 
     ReservationToSend reservation_net;
     memcpy(&reservation_net, reservation, sizeof(ReservationToSend));
-    printf("tickets: %d\n", reservation_net.ticket_count);
     reservation_net.reservation_id = htonl(reservation_net.reservation_id);
     reservation_net.event_id = htonl(reservation_net.event_id);
     reservation_net.ticket_count = htons(reservation_net.ticket_count);
     reservation_net.expiration_time = htonll(reservation_net.expiration_time);
 
     size_t message_length = 1 + sizeof(ReservationToSend);
-    printf("%lu\n", sizeof(ReservationToSend));
 
     char *message = server->message;
     message[0] = RESERVATION;
     memcpy(message + 1, &reservation_net, sizeof(ReservationToSend));
 
     send_message(server->socket_fd, &client_address, message, message_length);
+    printf("Reservation accepted. Confirmation sent.\n");
 }
 
 void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t current_time) {
@@ -464,7 +465,6 @@ void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t 
         reservations->reservations_array.array = safe_realloc(reservations->reservations_array.array, reservations->reservations_array.reserved * sizeof(void *));
     }
 }
-
 
 void check_outdated_reservations(Server *server) {
     uint64_t current_time = time(NULL);
@@ -529,6 +529,7 @@ void ticket_id_to_str(char *str, int64_t id) {
 }
 
 void process_tickets(const char *buffer, Server *server, struct sockaddr_in client_address) {
+    printf("Processing requested tickets...\n");
     uint32_t reservation_id;
     char cookie[COOKIE_SIZE];
 
@@ -565,6 +566,7 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
     memcpy(message + 5, &ticket_count, 2);
 
     send_message(server->socket_fd, &client_address, message, message_length);
+    printf("Tickets sent.\n");
 }
 
 void destroy_server(Server *server) {
@@ -584,12 +586,12 @@ _Noreturn void process_incoming_messages(Server *server) {
     struct sockaddr_in client_address;
     size_t read_length;
 
+    printf("Listening on port %u\n", server->parameters.port);
     while (true) {
         read_length = read_message(server->socket_fd, &client_address, shared_buffer, sizeof(shared_buffer));
         char *client_ip = inet_ntoa(client_address.sin_addr);
         uint16_t client_port = ntohs(client_address.sin_port);
-        printf("received %zd bytes from client %s:%u: '%d', time: %ld\n", read_length, client_ip, client_port,
-               shared_buffer[0], time(NULL));
+        printf("Received %zd bytes from client %s:%u at time: %ld\n", read_length, client_ip, client_port, time(NULL));
         check_outdated_reservations(server);
         if (shared_buffer[0] == GET_EVENTS && read_length == 1) {
             send_events(server, client_address);
@@ -600,6 +602,9 @@ _Noreturn void process_incoming_messages(Server *server) {
         else if (shared_buffer[0] == GET_TICKETS && read_length == 53) {
             process_tickets(shared_buffer + 1, server, client_address);
         }
+        else {
+            printf("Improper message format.\n");
+        }
     }
 }
 
@@ -608,6 +613,7 @@ int main(int argc, char *argv[]) {
 
     process_incoming_messages(&server);
     destroy_server(&server);
+    CHECK_ERRNO(close(server.socket_fd));
 
     return 0;
 }
