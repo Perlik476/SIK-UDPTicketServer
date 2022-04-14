@@ -155,7 +155,7 @@ typedef struct Event {
 } Event;
 
 typedef struct DynamicArray {
-    void **array;
+    void **arr;
     size_t reserved;
     size_t count;
 } DynamicArray;
@@ -165,21 +165,21 @@ DynamicArray new_dynamic_array() {
     size_t reserved = 1;
     size_t count = 0;
     void **array = safe_malloc(reserved * sizeof(void *));
-    return (DynamicArray) { .count = count, .reserved = reserved, .array = array };
+    return (DynamicArray) { .count = count, .reserved = reserved, .arr = array };
 }
 
 void add_to_dynamic_array(DynamicArray *array, void *item) {
     array->count++;
     if (array->count == array->reserved) {
         array->reserved *= 2;
-        array->array = safe_realloc(array->array, array->reserved * sizeof(Event));
+        array->arr = safe_realloc(array->arr, array->reserved * sizeof(Event));
     }
-    array->array[array->count - 1] = item;
+    array->arr[array->count - 1] = item;
 }
 
 void destroy_dynamic_array(DynamicArray *array) {
     for (size_t i = 0; i < array->count; i++) {
-        free(array->array[i]);
+        free(array->arr[i]);
     }
 }
 
@@ -331,7 +331,7 @@ void send_events(Server *server, struct sockaddr_in client_address) {
     EventToSend event_to_send;
 
     for (size_t i = 0; i < server->event_array.count; i++) {
-        Event *event = server->event_array.array[i];
+        Event *event = server->event_array.arr[i];
         event_to_send.event_id = htonl(i);
         event_to_send.ticket_count = htons(event->tickets);
         event_to_send.description_length = event->description_length;
@@ -377,7 +377,7 @@ Reservation *add_new_reservation(Server *server, uint32_t event_id, uint16_t tic
     memcpy(reservation->cookie, cookie, COOKIE_SIZE);
     free(cookie);
 
-    ((Event *) server->event_array.array[event_id])->tickets -= ticket_count;
+    ((Event *) server->event_array.arr[event_id])->tickets -= ticket_count;
 
     add_to_dynamic_array(&reservations->reservations_array, reservation);
     return reservation;
@@ -412,7 +412,7 @@ void process_reservation(const char *buffer, Server *server, struct sockaddr_in 
         return;
     }
 
-    if (((Event *) server->event_array.array[event_id])->tickets < ticket_count) {
+    if (((Event *) server->event_array.arr[event_id])->tickets < ticket_count) {
         send_bad_request(event_id, server->socket_fd, client_address);
         return;
     }
@@ -440,38 +440,41 @@ void remove_outdated_reservations(ReservationsContainer *reservations, uint64_t 
     DynamicArray *array = &reservations->reservations_array;
     size_t current_index = 0;
     for (size_t i = 0; i < array->count; i++) {
-        Reservation *reservation = (Reservation *)array->array[i];
+        Reservation *reservation = (Reservation *)array->arr[i];
         if (reservation->first_ticket_id != NO_TICKETS || reservation->expiration_time > current_time) {
             if (current_index != i) {
-                free(array->array[current_index]);
-                array->array[current_index] = reservation;
-                array->array[i] = NULL;
+                free(array->arr[current_index]);
+                array->arr[current_index] = reservation;
+                array->arr[i] = NULL;
             }
             current_index++;
         }
     }
 
     for (size_t i = current_index; i < array->count; i++) {
-        if (array->array[i] != NULL) {
-            free(array->array[i]);
+        if (array->arr[i] != NULL) {
+            free(array->arr[i]);
         }
     }
 
     reservations->reservations_array.count = current_index;
     reservations->outdated_count = 0;
     reservations->first_not_outdated = 0;
+    bool do_realloc = false;
 
     while (reservations->reservations_array.reserved / 4 > current_index) {
-        reservations->reservations_array.reserved /= 4;
+        reservations->reservations_array.reserved /= 2;
+        do_realloc = true;
     }
 
-    if (current_index == 0 && reservations->reservations_array.reserved != 1) {
-        free(reservations->reservations_array.array);
-        reservations->reservations_array.array = safe_malloc(sizeof(void *));
-    }
-    else {
-        reservations->reservations_array.array = safe_realloc(reservations->reservations_array.array,
-                                                            reservations->reservations_array.reserved * sizeof(void *));
+    if (do_realloc) {
+        if (current_index == 0 && reservations->reservations_array.reserved != 1) {
+            free(reservations->reservations_array.arr);
+            reservations->reservations_array.arr = safe_malloc(sizeof(void *));
+        } else {
+            reservations->reservations_array.arr = safe_realloc(reservations->reservations_array.arr,
+                                                    reservations->reservations_array.reserved * sizeof(void *));
+        }
     }
 }
 
@@ -481,18 +484,18 @@ void check_outdated_reservations(Server *server) {
     ReservationsContainer *reservations = &server->reservations;
     DynamicArray *array = &reservations->reservations_array;
     for (size_t i = reservations->first_not_outdated; i < array->count; i++) {
-        Reservation *reservation = ((Reservation *)array->array[i]);
+        Reservation *reservation = ((Reservation *)array->arr[i]);
         if (reservation->expiration_time > current_time) {
             break;
         }
         reservations->first_not_outdated++;
         if (reservation->first_ticket_id == NO_TICKETS) {
             reservations->outdated_count++;
-            ((Event *) server->event_array.array[reservation->event_id])->tickets += reservation->ticket_count;
+            ((Event *) server->event_array.arr[reservation->event_id])->tickets += reservation->ticket_count;
         }
     }
 
-    if (reservations->outdated_count >= array->count / 2) {
+    if (reservations->outdated_count > array->count / 2) {
         remove_outdated_reservations(reservations, current_time);
     }
 }
@@ -509,7 +512,7 @@ Reservation *find_reservation(ReservationsContainer *reservations, uint32_t rese
     Reservation *reservation;
 
     do {
-        reservation = array->array[mid];
+        reservation = array->arr[mid];
         if (reservation->reservation_id == reservation_id) {
             break;
         }
@@ -522,7 +525,7 @@ Reservation *find_reservation(ReservationsContainer *reservations, uint32_t rese
         mid = (begin + end) / 2;
     } while (end > 0 && begin < (long long) (array->count - 1));
 
-    reservation = array->array[mid];
+    reservation = array->arr[mid];
     if (reservation->reservation_id == reservation_id && memcmp(reservation->cookie, cookie, COOKIE_SIZE) == 0) {
         return reservation;
     }
@@ -580,14 +583,14 @@ void process_tickets(const char *buffer, Server *server, struct sockaddr_in clie
 
 void destroy_server(Server *server) {
     for (size_t i = 0; i < server->event_array.count; i++) {
-        Event *event = server->event_array.array[i];
+        Event *event = server->event_array.arr[i];
         free(event->description);
     }
 
     destroy_dynamic_array(&server->event_array);
     destroy_dynamic_array(&server->reservations.reservations_array);
-    free(server->event_array.array);
-    free(server->reservations.reservations_array.array);
+    free(server->event_array.arr);
+    free(server->reservations.reservations_array.arr);
 }
 
 _Noreturn void process_incoming_messages(Server *server) {
